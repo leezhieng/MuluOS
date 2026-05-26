@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+name="muluos-registryd"
+description="MuluOS configuration registry daemon"
+
+command="/usr/libexec/muluos/registryd"
+command_background="yes"
+pidfile="/run/muluos-registryd.pid"
+output_log="/var/log/muluos-registryd.log"
+error_log="/var/log/muluos-registryd.log"
+
+depend() {
+    need localmount
+    after bootmisc
+    before dbus xdm
+}
+
+start_pre() {
+    checkpath -d -m 0755 -o root:root /run/muluos
+    checkpath -d -m 0700 -o root:root /var/lib/muluos
+}

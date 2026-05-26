@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MuluOS Settings
+GenericName=System Settings
+Comment=Configure MuluOS — start menu, theme, system options
+TryExec=muluos-settings
+Exec=muluos-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;X-Muluos-system;

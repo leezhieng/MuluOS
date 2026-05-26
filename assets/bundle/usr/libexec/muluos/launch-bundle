@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Resolve and launch a MuluOS .exe bundle.
+
+Reads <bundle>/Info.json, prepares the environment (LD_LIBRARY_PATH,
+MULUOS_BUNDLE_*), then execs the bundle's declared entry point.
+"""
+from __future__ import annotations
+import fcntl
+import json
+import os
+import socket
+import struct
+import sys
+from pathlib import Path
+
+
+REGISTRY_SOCKET = "/run/muluos/registry.sock"
+REGISTRY_FD = 3  # fd handed to the bundle binary; daemon-side identity lives here
+
+
+def die(msg: str, code: int = 1):
+    print(f"muluos-launch-bundle: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def _setup_registry(bundle: Path, env: dict) -> list[str]:
+    """Connect to the registry daemon, fetch the machine-scope
+    `system.library_paths` value, bind this session to the bundle, and
+    dup the socket to fd 3 for the child. Returns the parsed list of
+    extra library search paths (empty if the daemon is unreachable or
+    the key is unset). Best-effort: if anything fails we still try to
+    exec the bundle binary; it will just have no registry fd and no
+    registry-provided library paths.
+    """
+    extra_paths: list[str] = []
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(REGISTRY_SOCKET)
+    except OSError:
+        return extra_paths
+
+    try:
+        resp = _rpc(s, {"op": "get", "scope": "machine",
+                        "bundle": "system", "key": "library_paths"})
+        if resp and resp.get("ok") and resp.get("found"):
+            raw = resp.get("value", "")
+            if isinstance(raw, str):
+                extra_paths = [p for p in raw.split(os.pathsep) if p]
+
+        resp = _rpc(s, {"op": "bind", "path": str(bundle)})
+        if not resp or not resp.get("ok"):
+            if resp:
+                print(f"muluos-launch-bundle: registry bind refused: {resp.get('error')}",
+                      file=sys.stderr)
+            s.close()
+            return extra_paths
+    except OSError:
+        s.close()
+        return extra_paths
+
+    os.dup2(s.fileno(), REGISTRY_FD)
+    s.close()
+    flags = fcntl.fcntl(REGISTRY_FD, fcntl.F_GETFD)
+    fcntl.fcntl(REGISTRY_FD, fcntl.F_SETFD, flags & ~fcntl.FD_CLOEXEC)
+    env["MULUOS_REGISTRY_FD"] = str(REGISTRY_FD)
+    return extra_paths
+
+
+def _rpc(sock: socket.socket, req: dict) -> dict | None:
+    body = json.dumps(req).encode("utf-8")
+    sock.sendall(struct.pack(">I", len(body)) + body)
+    hdr = _recv_n(sock, 4)
+    if hdr is None:
+        return None
+    (n,) = struct.unpack(">I", hdr)
+    payload = _recv_n(sock, n)
+    if payload is None:
+        return None
+    return json.loads(payload)
+
+
+def _recv_n(sock: socket.socket, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def main(argv: list[str]) -> None:
+    if len(argv) < 2:
+        die("usage: launch-bundle <bundle.exe> [args...]", 2)
+
+    bundle = Path(argv[1]).resolve()
+    if not bundle.is_dir():
+        die(f"not a directory: {bundle}")
+
+    info_path = bundle / "Info.json"
+    if not info_path.is_file():
+        die(f"missing Info.json in bundle: {bundle}")
+
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        die(f"invalid Info.json: {exc}")
+
+    exec_rel = info.get("exec")
+    if not exec_rel:
+        die("Info.json missing required field 'exec'")
+
+    # Resolve and confine to bundle to block "exec": "../../bin/sh" tricks.
+    exec_path = (bundle / exec_rel).resolve()
+    try:
+        exec_path.relative_to(bundle)
+    except ValueError:
+        die("'exec' must point inside the bundle")
+    if not exec_path.is_file() or not os.access(exec_path, os.X_OK):
+        die(f"exec not runnable: {exec_path}")
+
+    env = os.environ.copy()
+    env["MULUOS_BUNDLE"] = str(bundle)
+    env["MULUOS_BUNDLE_RESOURCES"] = str(bundle / "Resources")
+    env["MULUOS_BUNDLE_ID"] = info.get("id", bundle.stem)
+    env["MULUOS_BUNDLE_VERSION"] = str(info.get("version", ""))
+
+    extra_env = info.get("env")
+    if isinstance(extra_env, dict):
+        for k, v in extra_env.items():
+            env[str(k)] = str(v)
+
+    # Registry call comes BEFORE the LD_LIBRARY_PATH composition so we
+    # can splice the system-wide library paths in at the right position
+    # (after bundle dirs, before existing/system).
+    registry_paths = _setup_registry(bundle, env)
+
+    # Library search order (highest precedence first):
+    #   1. <bundle>/Contents/lib           — bundle's own libs
+    #   2. <exec_path.parent>              — same directory as the binary
+    #   3. registry: system.library_paths  — admin-managed extras
+    #   4. inherited LD_LIBRARY_PATH       — caller's environment
+    #   5. /etc/ld.so.cache + /lib + /usr/lib  (handled by ld.so itself)
+    lib_search: list[str] = []
+    libdir = bundle / "Contents" / "lib"
+    if libdir.is_dir():
+        lib_search.append(str(libdir))
+    exec_dir = str(exec_path.parent)
+    if exec_dir not in lib_search:
+        lib_search.append(exec_dir)
+    lib_search.extend(registry_paths)
+    inherited = env.get("LD_LIBRARY_PATH", "")
+    if inherited:
+        lib_search.append(inherited)
+    if lib_search:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(lib_search)
+
+    os.chdir(bundle)
+    os.execvpe(str(exec_path), [str(exec_path), *argv[2:]], env)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

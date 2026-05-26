@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MuluOS Bundle Launcher
+GenericName=Application Bundle
+Comment=Run a MuluOS .exe application bundle
+TryExec=/usr/libexec/muluos/launch-bundle
+Exec=/usr/libexec/muluos/launch-bundle %f
+NoDisplay=true
+Terminal=false
+Icon=application-x-muluos-bundle
+MimeType=application/x-muluos-bundle;
+Categories=System;

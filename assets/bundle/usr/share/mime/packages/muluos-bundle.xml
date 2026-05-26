@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-muluos-bundle">
+    <comment>MuluOS application bundle</comment>
+    <comment xml:lang="en">MuluOS application bundle</comment>
+    <icon name="application-x-muluos-bundle"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.exe" case-sensitive="false" weight="60"/>
+    <treemagic>
+      <treematch type="file" path="Info.json" non-empty="true"/>
+    </treemagic>
+  </mime-type>
+</mime-info>

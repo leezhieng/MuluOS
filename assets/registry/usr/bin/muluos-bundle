@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""muluos-bundle: install/uninstall MuluOS .exe bundles.
+
+`install <path>` is what the package installer calls when it places a
+bundle on disk. It:
+  1. Resolves the bundle's canonical install path.
+  2. Registers the bundle in the registry (root only).
+  3. Generates a /usr/share/applications/muluos-bundles/<id>.desktop entry
+     pointing at the bundle's largest Resources/icons/<N>.png so the bundle
+     appears in KRunner / the app menu with its own icon.
+  4. (Optional) Pre-warms the freedesktop thumbnail cache so file managers
+     show the bundle icon immediately without an on-demand thumbnailer run.
+
+`uninstall <id>` reverses steps 2 and 3 and optionally purges registry data.
+"""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/usr/lib/muluos")
+from muluos_registry import Client, RegistryError  # noqa: E402
+
+
+DESKTOP_DIR = Path("/usr/share/applications/muluos-bundles")
+LAUNCHER = "/usr/libexec/muluos/launch-bundle"
+SIZE_RE = re.compile(r"(\d+)(?:x\d+)?\.png$", re.IGNORECASE)
+
+
+def read_info(bundle: Path) -> dict:
+    info_path = bundle / "Info.json"
+    if not info_path.is_file():
+        sys.exit(f"muluos-bundle: missing Info.json in {bundle}")
+    try:
+        return json.loads(info_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        sys.exit(f"muluos-bundle: invalid Info.json: {e}")
+
+
+def pick_icon(bundle: Path, info: dict) -> Path | None:
+    """Largest available PNG in Resources/icons, falling back to Info.json:icon."""
+    icons_dir = bundle / "Resources" / "icons"
+    best: tuple[int, Path] | None = None
+    if icons_dir.is_dir():
+        for p in icons_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = SIZE_RE.match(p.name)
+            if m:
+                size = int(m.group(1))
+                if best is None or size > best[0]:
+                    best = (size, p)
+    if best is not None:
+        return best[1]
+    ref = info.get("icon")
+    if isinstance(ref, str):
+        p = (bundle / ref).resolve()
+        try:
+            p.relative_to(bundle.resolve())
+        except ValueError:
+            return None
+        if p.is_file():
+            return p
+    return None
+
+
+def write_desktop_entry(bundle: Path, info: dict, icon: Path | None) -> Path:
+    DESKTOP_DIR.mkdir(parents=True, exist_ok=True)
+    bid = info.get("id", bundle.stem)
+    name = info.get("name") or bundle.stem
+    comment = info.get("comment", "")
+    categories = info.get("categories", "Utility")
+
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        f"Name={name}",
+    ]
+    if comment:
+        lines.append(f"Comment={comment}")
+    lines += [
+        f"Exec={LAUNCHER} {bundle} %U",
+        "Terminal=false",
+        f"Categories={categories};",
+        "X-MuluOS-Bundle=true",
+        f"X-MuluOS-Bundle-Id={bid}",
+    ]
+    if icon is not None:
+        lines.append(f"Icon={icon}")
+    target = DESKTOP_DIR / f"{_safe_id(bid)}.desktop"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    target.chmod(0o644)
+    return target
+
+
+def remove_desktop_entry(bid: str) -> bool:
+    target = DESKTOP_DIR / f"{_safe_id(bid)}.desktop"
+    if target.is_file():
+        target.unlink()
+        return True
+    return False
+
+
+def _safe_id(bid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", bid)
+
+
+def prewarm_thumbnails(bundle: Path, info: dict, target_user_home: Path | None) -> int:
+    """Write into the freedesktop thumbnail cache so file managers don't
+    have to invoke the thumbnailer on first view. The cache is per-user;
+    when --user is given we write into that user's ~/.cache/thumbnails.
+    Returns the number of thumbnails written.
+    """
+    if target_user_home is None:
+        target_user_home = Path.home()
+
+    uri = "file://" + str(bundle.resolve())
+    digest = hashlib.md5(uri.encode("utf-8")).hexdigest()
+
+    sizes = {"normal": 128, "large": 256, "x-large": 512, "xx-large": 1024}
+    written = 0
+    for subdir, size in sizes.items():
+        cache_dir = target_user_home / ".cache" / "thumbnails" / subdir
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        dst = cache_dir / f"{digest}.png"
+        src = _icon_for_size(bundle, info, size)
+        if src is None:
+            continue
+        try:
+            _write_thumbnail(src, dst, size)
+            written += 1
+        except OSError as e:
+            print(f"warn: failed to write {dst}: {e}", file=sys.stderr)
+    return written
+
+
+def _icon_for_size(bundle: Path, info: dict, size: int) -> Path | None:
+    icons_dir = bundle / "Resources" / "icons"
+    candidates: list[tuple[int, Path]] = []
+    if icons_dir.is_dir():
+        for p in icons_dir.iterdir():
+            if p.is_file():
+                m = SIZE_RE.match(p.name)
+                if m:
+                    candidates.append((int(m.group(1)), p))
+    if not candidates:
+        fallback = pick_icon(bundle, info)
+        return fallback
+    bigger = sorted((c for c in candidates if c[0] >= size), key=lambda c: c[0])
+    if bigger:
+        return bigger[0][1]
+    return max(candidates, key=lambda c: c[0])[1]
+
+
+def _write_thumbnail(src: Path, dst: Path, size: int) -> None:
+    try:
+        from PIL import Image
+    except ImportError:
+        shutil.copyfile(src, dst)
+        return
+    with Image.open(src) as im:
+        im = im.convert("RGBA")
+        im.thumbnail((size, size), Image.LANCZOS)
+        im.save(dst, "PNG")
+
+
+def cmd_install(args) -> None:
+    bundle = Path(args.path).resolve(strict=True)
+    if not bundle.is_dir():
+        sys.exit(f"muluos-bundle: not a directory: {bundle}")
+    info = read_info(bundle)
+    bid = info.get("id") or bundle.stem
+
+    with Client.connect_direct() as client:
+        try:
+            client.register_bundle(bid, str(bundle))
+        except RegistryError as e:
+            sys.exit(f"muluos-bundle: register failed: {e}")
+
+    icon = pick_icon(bundle, info)
+    desktop = write_desktop_entry(bundle, info, icon)
+    print(f"registered: {bid} -> {bundle}")
+    print(f"desktop entry: {desktop}")
+    if icon:
+        print(f"icon: {icon}")
+
+    if args.prewarm:
+        home = Path(args.prewarm_for_home) if args.prewarm_for_home else None
+        n = prewarm_thumbnails(bundle, info, home)
+        print(f"thumbnails prewarmed: {n}")
+
+    _refresh_desktop_db()
+
+
+def cmd_uninstall(args) -> None:
+    with Client.connect_direct() as client:
+        try:
+            client.unregister_bundle(args.id, purge=args.purge)
+        except RegistryError as e:
+            sys.exit(f"muluos-bundle: unregister failed: {e}")
+    removed = remove_desktop_entry(args.id)
+    print(f"unregistered: {args.id}" + (" (desktop entry removed)" if removed else ""))
+    _refresh_desktop_db()
+
+
+def cmd_prewarm(args) -> None:
+    bundle = Path(args.path).resolve(strict=True)
+    info = read_info(bundle)
+    home = Path(args.home) if args.home else None
+    n = prewarm_thumbnails(bundle, info, home)
+    print(f"thumbnails prewarmed: {n}")
+
+
+def _refresh_desktop_db() -> None:
+    if shutil.which("update-desktop-database"):
+        os.system("update-desktop-database /usr/share/applications >/dev/null 2>&1")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(prog="muluos-bundle", description="Install/uninstall MuluOS bundles")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    inst = sub.add_parser("install", help="register a bundle and create its app-menu entry")
+    inst.add_argument("path", help="path to the .exe bundle directory")
+    inst.add_argument("--prewarm", action="store_true",
+                      help="pre-generate freedesktop thumbnails for the bundle")
+    inst.add_argument("--prewarm-for-home", default=None,
+                      help="HOME of the user whose thumbnail cache to populate (default: current user)")
+    inst.set_defaults(fn=cmd_install)
+
+    un = sub.add_parser("uninstall", help="reverse an install")
+    un.add_argument("id")
+    un.add_argument("--purge", action="store_true",
+                    help="also delete all the bundle's registry data")
+    un.set_defaults(fn=cmd_uninstall)
+
+    pw = sub.add_parser("prewarm-thumbnails", help="just populate the thumbnail cache")
+    pw.add_argument("path")
+    pw.add_argument("--home", default=None)
+    pw.set_defaults(fn=cmd_prewarm)
+
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Environment Editor
+GenericName=Environment Variables
+Comment=Edit the system PATH and environment variables
+TryExec=muluos-env-editor
+Exec=muluos-env-editor
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;X-Muluos-system;

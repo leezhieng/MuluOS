@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+TryExec=/usr/libexec/muluos/bundle-thumbnailer
+Exec=/usr/libexec/muluos/bundle-thumbnailer %i %o %s
+MimeType=application/x-muluos-bundle;

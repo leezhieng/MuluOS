@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""MuluOS registry daemon.
+
+A small Windows-registry-shaped key/value store backed by SQLite. The
+daemon mediates access through a Unix socket and enforces two rules:
+
+1. Identity is derived from filesystem path: when the launcher binds a
+   session, the daemon looks up the bundle id by the bundle's *install
+   path* (the bundles table is the only authority). The Info.json file's
+   "id" field is informational; it is never trusted for access control.
+
+2. The bundle->path mapping can only be written by root, so a malicious
+   user cannot remap a registered id to a path they control.
+
+A non-launcher caller (anything whose /proc/<pid>/exe and cmdline don't
+look like the trusted launcher) cannot bind. Root callers can additionally
+perform machine-scope writes and bundle (un)registration.
+"""
+from __future__ import annotations
+import base64
+import hashlib
+import json
+import logging
+import os
+import signal
+import socket
+import socketserver
+import sqlite3
+import struct
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+
+SOCKET_DIR = Path("/run/muluos")
+SOCKET_PATH = SOCKET_DIR / "registry.sock"
+DB_DIR = Path("/var/lib/muluos")
+DB_PATH = DB_DIR / "registry.sqlite"
+LAUNCHER_PATH = b"/usr/libexec/muluos/launch-bundle"
+
+KEY_MAX = 4096
+VALUE_MAX = 1 << 20            # 1 MiB per value
+FRAME_MAX = VALUE_MAX + 65536  # leave headroom for framing/json overhead
+
+VALID_TYPES = ("string", "int", "bool", "json", "blob")
+VALID_SCOPES = ("user", "machine")
+
+# Linux SO_PEERCRED layout: pid (i), uid (I), gid (I)
+SO_PEERCRED = 17
+PEERCRED_FMT = "iII"
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS bundles (
+    id           TEXT PRIMARY KEY,
+    install_path TEXT NOT NULL UNIQUE,
+    installed_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS entries (
+    scope   TEXT NOT NULL CHECK (scope IN ('machine', 'user')),
+    uid     INTEGER NOT NULL,
+    bundle  TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    value   BLOB,
+    type    TEXT NOT NULL CHECK (type IN ('string','int','bool','json','blob')),
+    mtime   INTEGER NOT NULL,
+    PRIMARY KEY (scope, uid, bundle, key)
+);
+CREATE INDEX IF NOT EXISTS idx_entries_prefix
+    ON entries (scope, uid, bundle, key);
+"""
+
+
+db_lock = threading.Lock()
+_tls = threading.local()
+log = logging.getLogger("registryd")
+
+
+def get_db() -> sqlite3.Connection:
+    conn = getattr(_tls, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(str(DB_PATH), isolation_level=None, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _tls.conn = conn
+    return conn
+
+
+def init_db() -> None:
+    DB_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    conn = get_db()
+    conn.executescript(SCHEMA)
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def recv_n(sock: socket.socket, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def read_frame(sock: socket.socket) -> dict | None:
+    hdr = recv_n(sock, 4)
+    if hdr is None:
+        return None
+    (length,) = struct.unpack(">I", hdr)
+    if length > FRAME_MAX:
+        raise ValueError("frame too large")
+    body = recv_n(sock, length)
+    if body is None:
+        return None
+    return json.loads(body.decode("utf-8"))
+
+
+def write_frame(sock: socket.socket, obj: dict) -> None:
+    body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    sock.sendall(struct.pack(">I", len(body)) + body)
+
+
+def get_peercred(sock: socket.socket) -> tuple[int, int, int]:
+    raw = sock.getsockopt(socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize(PEERCRED_FMT))
+    return struct.unpack(PEERCRED_FMT, raw)
+
+
+def caller_is_launcher(pid: int) -> bool:
+    """Heuristic check that the peer is the trusted launcher script.
+
+    Verifies /proc/<pid>/exe resolves to a python interpreter and the
+    script argument (argv[1] of the python command line) is exactly the
+    launcher path. This is not unforgeable in a Python-only world (a
+    future hardening step is to compile the launcher to a small C binary
+    so /proc/exe alone is authoritative). For now this raises the bar
+    enough that ordinary processes cannot impersonate the launcher.
+    """
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe")
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv = f.read().split(b"\x00")
+    except OSError:
+        return False
+    if not Path(exe).name.startswith("python"):
+        return False
+    return len(argv) >= 2 and argv[1] == LAUNCHER_PATH
+
+
+def validate_key(key: Any) -> str:
+    if not isinstance(key, str) or not key or len(key) > KEY_MAX:
+        raise ValueError("bad key")
+    if "\x00" in key or "\n" in key:
+        raise ValueError("key contains forbidden char")
+    return key
+
+
+def encode_value(value: Any, type_: str) -> bytes:
+    if type_ == "string":
+        return str(value).encode("utf-8")
+    if type_ == "int":
+        return str(int(value)).encode("ascii")
+    if type_ == "bool":
+        return b"1" if value else b"0"
+    if type_ == "json":
+        return json.dumps(value).encode("utf-8")
+    if type_ == "blob":
+        if isinstance(value, str):
+            return base64.b64decode(value)
+        return bytes(value)
+    raise ValueError(f"bad type: {type_}")
+
+
+def decode_value(blob: bytes, type_: str) -> Any:
+    if type_ == "string":
+        return blob.decode("utf-8")
+    if type_ == "int":
+        return int(blob)
+    if type_ == "bool":
+        return blob == b"1"
+    if type_ == "json":
+        return json.loads(blob)
+    if type_ == "blob":
+        return base64.b64encode(blob).decode("ascii")
+    raise ValueError(f"bad type: {type_}")
+
+
+class Session:
+    __slots__ = ("peer_pid", "peer_uid", "peer_gid",
+                 "bound_uid", "bound_bundle")
+
+    def __init__(self, pid: int, uid: int, gid: int):
+        self.peer_pid = pid
+        self.peer_uid = uid
+        self.peer_gid = gid
+        self.bound_uid: int | None = None
+        self.bound_bundle: str | None = None
+
+    @property
+    def is_root(self) -> bool:
+        return self.peer_uid == 0
+
+
+def _resolve_scope_target(session: Session, req: dict, write: bool) -> tuple[str, int, str]:
+    scope = req.get("scope", "user")
+    if scope not in VALID_SCOPES:
+        raise ValueError("bad scope")
+    if scope == "user":
+        if session.bound_bundle is None:
+            raise PermissionError("not bound; user-scope ops require bundle session")
+        return scope, session.bound_uid, session.bound_bundle  # type: ignore[return-value]
+    # machine scope
+    if write and not session.is_root:
+        raise PermissionError("machine write requires root")
+    bundle = session.bound_bundle if session.bound_bundle else req.get("bundle")
+    if not isinstance(bundle, str) or not bundle:
+        raise ValueError("machine: bundle required")
+    return scope, 0, bundle
+
+
+def op_bind(session: Session, req: dict) -> dict:
+    if session.bound_bundle is not None:
+        return {"ok": False, "error": "already bound"}
+    if not caller_is_launcher(session.peer_pid):
+        return {"ok": False, "error": "bind: untrusted caller"}
+
+    path = req.get("path")
+    if not isinstance(path, str) or not path:
+        return {"ok": False, "error": "bind: path required"}
+    try:
+        real = str(Path(path).resolve(strict=True))
+    except OSError:
+        return {"ok": False, "error": "bind: path does not exist"}
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id FROM bundles WHERE install_path = ?", (real,)
+    ).fetchone()
+    if row is not None:
+        effective = row[0]
+    else:
+        h = hashlib.sha256(real.encode("utf-8")).hexdigest()[:16]
+        effective = f"local:{h}"
+
+    session.bound_uid = session.peer_uid
+    session.bound_bundle = effective
+    log.info("bind uid=%d pid=%d -> %s (%s)", session.peer_uid, session.peer_pid, effective, real)
+    return {"ok": True, "bundle": effective}
+
+
+def op_get(session: Session, req: dict) -> dict:
+    key = validate_key(req.get("key"))
+    scope, uid, bundle = _resolve_scope_target(session, req, write=False)
+    row = get_db().execute(
+        "SELECT value, type FROM entries WHERE scope=? AND uid=? AND bundle=? AND key=?",
+        (scope, uid, bundle, key),
+    ).fetchone()
+    if row is None:
+        return {"ok": True, "found": False}
+    return {"ok": True, "found": True, "value": decode_value(row[0], row[1]), "type": row[1]}
+
+
+def op_set(session: Session, req: dict) -> dict:
+    key = validate_key(req.get("key"))
+    type_ = req.get("type", "string")
+    if type_ not in VALID_TYPES:
+        return {"ok": False, "error": "bad type"}
+    scope, uid, bundle = _resolve_scope_target(session, req, write=True)
+    blob = encode_value(req.get("value"), type_)
+    if len(blob) > VALUE_MAX:
+        return {"ok": False, "error": "value too large"}
+    with db_lock:
+        get_db().execute(
+            "INSERT OR REPLACE INTO entries(scope,uid,bundle,key,value,type,mtime) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (scope, uid, bundle, key, blob, type_, int(time.time())),
+        )
+    return {"ok": True}
+
+
+def op_delete(session: Session, req: dict) -> dict:
+    key = validate_key(req.get("key"))
+    scope, uid, bundle = _resolve_scope_target(session, req, write=True)
+    with db_lock:
+        cur = get_db().execute(
+            "DELETE FROM entries WHERE scope=? AND uid=? AND bundle=? AND key=?",
+            (scope, uid, bundle, key),
+        )
+    return {"ok": True, "deleted": cur.rowcount}
+
+
+def op_list(session: Session, req: dict) -> dict:
+    scope, uid, bundle = _resolve_scope_target(session, req, write=False)
+    prefix = req.get("prefix", "")
+    if not isinstance(prefix, str):
+        return {"ok": False, "error": "bad prefix"}
+    like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    rows = get_db().execute(
+        "SELECT key, type FROM entries "
+        "WHERE scope=? AND uid=? AND bundle=? AND key LIKE ? ESCAPE '\\' "
+        "ORDER BY key",
+        (scope, uid, bundle, like),
+    ).fetchall()
+    return {"ok": True, "keys": [{"key": k, "type": t} for k, t in rows]}
+
+
+def op_register_bundle(session: Session, req: dict) -> dict:
+    if not session.is_root:
+        return {"ok": False, "error": "register_bundle requires root"}
+    bid = req.get("id")
+    path = req.get("path")
+    if not isinstance(bid, str) or not isinstance(path, str):
+        return {"ok": False, "error": "bad args"}
+    try:
+        real = str(Path(path).resolve(strict=True))
+    except OSError:
+        return {"ok": False, "error": "path does not exist"}
+    with db_lock:
+        get_db().execute(
+            "INSERT OR REPLACE INTO bundles(id, install_path, installed_at) VALUES (?,?,?)",
+            (bid, real, int(time.time())),
+        )
+    log.info("registered bundle %s -> %s", bid, real)
+    return {"ok": True, "path": real}
+
+
+def op_unregister_bundle(session: Session, req: dict) -> dict:
+    if not session.is_root:
+        return {"ok": False, "error": "unregister_bundle requires root"}
+    bid = req.get("id")
+    purge = bool(req.get("purge", False))
+    if not isinstance(bid, str):
+        return {"ok": False, "error": "bad args"}
+    with db_lock:
+        db = get_db()
+        db.execute("DELETE FROM bundles WHERE id = ?", (bid,))
+        if purge:
+            db.execute("DELETE FROM entries WHERE bundle = ?", (bid,))
+    log.info("unregistered bundle %s (purge=%s)", bid, purge)
+    return {"ok": True}
+
+
+def op_list_bundles(session: Session, req: dict) -> dict:
+    rows = get_db().execute(
+        "SELECT id, install_path, installed_at FROM bundles ORDER BY id"
+    ).fetchall()
+    return {"ok": True, "bundles": [
+        {"id": r[0], "path": r[1], "installed_at": r[2]} for r in rows
+    ]}
+
+
+OPS = {
+    "bind": op_bind,
+    "get": op_get,
+    "set": op_set,
+    "delete": op_delete,
+    "list": op_list,
+    "register_bundle": op_register_bundle,
+    "unregister_bundle": op_unregister_bundle,
+    "list_bundles": op_list_bundles,
+    "ping": lambda s, r: {"ok": True, "bundle": s.bound_bundle, "uid": s.peer_uid},
+}
+
+
+class Handler(socketserver.StreamRequestHandler):
+    def handle(self) -> None:
+        sock = self.request
+        try:
+            pid, uid, gid = get_peercred(sock)
+        except OSError:
+            return
+        session = Session(pid, uid, gid)
+        while True:
+            try:
+                req = read_frame(sock)
+            except (ValueError, json.JSONDecodeError) as e:
+                try:
+                    write_frame(sock, {"ok": False, "error": f"bad request: {e}"})
+                except OSError:
+                    pass
+                return
+            if req is None:
+                return
+            op = req.get("op")
+            handler = OPS.get(op)
+            if handler is None:
+                resp: dict = {"ok": False, "error": f"unknown op: {op}"}
+            else:
+                try:
+                    resp = handler(session, req)
+                except PermissionError as e:
+                    resp = {"ok": False, "error": str(e)}
+                except ValueError as e:
+                    resp = {"ok": False, "error": str(e)}
+                except Exception:
+                    log.exception("op %s failed", op)
+                    resp = {"ok": False, "error": "internal error"}
+            try:
+                write_frame(sock, resp)
+            except OSError:
+                return
+
+
+class Server(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="registryd: %(message)s")
+
+    SOCKET_DIR.mkdir(parents=True, exist_ok=True, mode=0o755)
+    if SOCKET_PATH.exists():
+        SOCKET_PATH.unlink()
+    init_db()
+
+    server = Server(str(SOCKET_PATH), Handler)
+    os.chmod(SOCKET_PATH, 0o666)
+
+    def shutdown(_signum, _frame):
+        log.info("shutting down")
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    log.info("listening on %s", SOCKET_PATH)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        if SOCKET_PATH.exists():
+            try:
+                SOCKET_PATH.unlink()
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    main()

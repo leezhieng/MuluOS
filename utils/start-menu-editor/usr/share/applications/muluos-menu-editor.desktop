@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Start Menu Editor
+GenericName=Menu Editor
+Comment=Edit MuluOS start menu categories and program assignments
+TryExec=muluos-menu-editor
+Exec=muluos-menu-editor
+Icon=start-here-kde
+Terminal=false
+Categories=Settings;System;X-Muluos-system;

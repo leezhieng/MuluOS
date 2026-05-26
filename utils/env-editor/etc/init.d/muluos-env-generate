@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+name="muluos-env-generate"
+description="Render /etc/profile.d/muluos-env.sh from the MuluOS registry"
+
+command="/usr/libexec/muluos/env-generate"
+
+depend() {
+    need muluos-registryd
+}
+
+start() {
+    ebegin "Generating MuluOS environment profile"
+    "$command"
+    eend $?
+}
+
+stop() {
+    return 0
+}

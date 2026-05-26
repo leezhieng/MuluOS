@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Service
+MimeType=application/x-muluos-bundle;
+Actions=ShowBundleContents;ShowBundleInfo;RunBundle;
+
+[Desktop Action ShowBundleContents]
+Name=Show Bundle Contents
+Icon=folder-open
+Exec=dolphin %f
+
+[Desktop Action ShowBundleInfo]
+Name=Show Bundle Info
+Icon=dialog-information
+Exec=kdialog --title "Bundle Info" --textbox %f/Info.json 640 480
+
+[Desktop Action RunBundle]
+Name=Run Bundle
+Icon=system-run
+Exec=/usr/libexec/muluos/launch-bundle %f

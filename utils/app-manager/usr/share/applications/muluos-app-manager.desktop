@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Add or Remove Programs
+GenericName=Application Manager
+Comment=Uninstall MuluOS applications
+TryExec=muluos-app-manager
+Exec=muluos-app-manager
+Icon=applications-other
+Terminal=false
+Categories=Settings;System;X-Muluos-system;

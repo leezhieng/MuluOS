@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""muluos-reg: low-level command-line for the MuluOS registry.
+
+The CLI talks to the daemon over the system socket. User-scope keys are
+not addressable from here (those are reached only via the bundle launcher
++ inherited fd). Use this tool for machine-scope reads/writes and bundle
+(un)registration.
+"""
+from __future__ import annotations
+import argparse
+import json
+import sys
+
+sys.path.insert(0, "/usr/lib/muluos")
+from muluos_registry import Client, RegistryError  # noqa: E402
+
+
+def cmd_get(client: Client, args) -> None:
+    v = client.machine_get(args.bundle, args.key)
+    if v is None:
+        sys.exit(1)
+    print(v if isinstance(v, str) else json.dumps(v))
+
+
+def cmd_set(client: Client, args) -> None:
+    value: object = args.value
+    if args.type == "int":
+        value = int(args.value)
+    elif args.type == "bool":
+        value = args.value.lower() in ("1", "true", "yes", "on")
+    elif args.type == "json":
+        value = json.loads(args.value)
+    client.machine_set(args.bundle, args.key, value, type=args.type)
+
+
+def cmd_delete(client: Client, args) -> None:
+    client.machine_delete(args.bundle, args.key)
+
+
+def cmd_list(client: Client, args) -> None:
+    for row in client.machine_list(args.bundle, args.prefix or ""):
+        print(f"{row['key']}\t{row['type']}")
+
+
+def cmd_register(client: Client, args) -> None:
+    real = client.register_bundle(args.id, args.path)
+    print(real)
+
+
+def cmd_unregister(client: Client, args) -> None:
+    client.unregister_bundle(args.id, purge=args.purge)
+
+
+def cmd_bundles(client: Client, _args) -> None:
+    for b in client.list_bundles():
+        print(f"{b['id']}\t{b['path']}")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(prog="muluos-reg", description="MuluOS registry CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def with_bundle(sp):
+        sp.add_argument("--bundle", required=True, help="bundle id")
+
+    g = sub.add_parser("get", help="get a machine-scope value")
+    with_bundle(g); g.add_argument("key"); g.set_defaults(fn=cmd_get)
+
+    s = sub.add_parser("set", help="set a machine-scope value (root)")
+    with_bundle(s); s.add_argument("key"); s.add_argument("value")
+    s.add_argument("--type", default="string", choices=("string", "int", "bool", "json"))
+    s.set_defaults(fn=cmd_set)
+
+    d = sub.add_parser("delete", help="delete a machine-scope value (root)")
+    with_bundle(d); d.add_argument("key"); d.set_defaults(fn=cmd_delete)
+
+    l = sub.add_parser("list", help="list machine-scope keys")
+    with_bundle(l); l.add_argument("prefix", nargs="?", default="")
+    l.set_defaults(fn=cmd_list)
+
+    rb = sub.add_parser("register-bundle", help="register an installed bundle (root)")
+    rb.add_argument("id"); rb.add_argument("path"); rb.set_defaults(fn=cmd_register)
+
+    ub = sub.add_parser("unregister-bundle", help="unregister an installed bundle (root)")
+    ub.add_argument("id"); ub.add_argument("--purge", action="store_true")
+    ub.set_defaults(fn=cmd_unregister)
+
+    lb = sub.add_parser("list-bundles", help="list registered bundles")
+    lb.set_defaults(fn=cmd_bundles)
+
+    args = p.parse_args()
+    try:
+        with Client.connect_direct() as client:
+            args.fn(client, args)
+    except RegistryError as e:
+        sys.exit(f"muluos-reg: {e}")
+    except FileNotFoundError:
+        sys.exit("muluos-reg: registry daemon socket not found; is muluos-registryd running?")
+
+
+if __name__ == "__main__":
+    main()

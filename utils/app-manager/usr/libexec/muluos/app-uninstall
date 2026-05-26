@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Privileged uninstaller for a MuluOS bundle. Run via pkexec.
+
+    app-uninstall <bundle-id>
+
+Honors an optional "uninstall" block in the bundle's Info.json:
+
+    "uninstall": {
+      "exec": "Contents/bin/uninstall",      pre-removal hook (run as root,
+                                              MULUOS_BUNDLE + MULUOS_UNINSTALL set)
+      "remove_paths": ["/opt/foo-data", ...]  extra absolute paths to delete
+    }
+
+Order: run hook -> remove declared paths -> unregister via muluos-bundle
+-> delete the bundle directory. With no config, the default is unregister +
+delete the directory.
+"""
+from __future__ import annotations
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import muluos_registry as reg
+
+# Never delete these even if a bundle asks; guards against a malicious or
+# buggy remove_paths wiping the system.
+_PROTECTED = {
+    "/", "/usr", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64",
+    "/usr/share", "/usr/local", "/etc", "/bin", "/sbin", "/lib", "/lib64",
+    "/boot", "/home", "/root", "/var", "/opt", "/dev", "/proc", "/sys",
+    "/run", "/tmp",
+}
+
+
+def find_bundle(bundle_id: str) -> Path | None:
+    with reg.Client.connect_direct() as client:
+        for b in client.list_bundles():
+            if b["id"] == bundle_id:
+                return Path(b["path"])
+    return None
+
+
+def read_uninstall_config(bundle: Path) -> dict:
+    info = bundle / "Info.json"
+    if not info.is_file():
+        return {}
+    try:
+        data = json.loads(info.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    cfg = data.get("uninstall")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def run_hook(bundle: Path, cfg: dict) -> None:
+    rel = cfg.get("exec")
+    if not rel:
+        return
+    hook = (bundle / rel).resolve()
+    try:
+        hook.relative_to(bundle.resolve())
+    except ValueError:
+        print(f"app-uninstall: hook escapes bundle, skipping: {rel}", file=sys.stderr)
+        return
+    if not hook.is_file():
+        return
+    env = os.environ.copy()
+    env["MULUOS_BUNDLE"] = str(bundle)
+    env["MULUOS_UNINSTALL"] = "1"
+    print(f"running uninstall hook: {hook}")
+    subprocess.run([str(hook)], env=env, check=False)
+
+
+def remove_declared_paths(cfg: dict) -> None:
+    for p in cfg.get("remove_paths", []):
+        path = Path(p)
+        if not path.is_absolute():
+            print(f"app-uninstall: skip non-absolute remove_path: {p}", file=sys.stderr)
+            continue
+        if os.path.realpath(str(path)) in _PROTECTED:
+            print(f"app-uninstall: refusing to remove protected path: {p}", file=sys.stderr)
+            continue
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            print(f"removed dir: {path}")
+        elif path.exists():
+            try:
+                path.unlink()
+                print(f"removed file: {path}")
+            except OSError as e:
+                print(f"app-uninstall: could not remove {path}: {e}", file=sys.stderr)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("usage: app-uninstall <bundle-id>", file=sys.stderr)
+        return 2
+    bundle_id = argv[1]
+    bundle = find_bundle(bundle_id)
+
+    if bundle is not None:
+        cfg = read_uninstall_config(bundle)
+        run_hook(bundle, cfg)
+        remove_declared_paths(cfg)
+
+    subprocess.run(["muluos-bundle", "uninstall", bundle_id, "--purge"], check=False)
+
+    if bundle is not None and bundle.is_dir():
+        if os.path.realpath(str(bundle)) in _PROTECTED:
+            print(f"app-uninstall: refusing to remove protected bundle path: {bundle}",
+                  file=sys.stderr)
+        else:
+            shutil.rmtree(bundle, ignore_errors=True)
+            print(f"removed bundle: {bundle}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

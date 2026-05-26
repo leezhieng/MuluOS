@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Package Creator
+GenericName=Bundle Creator
+Comment=Create MuluOS .exe application bundles and installers
+TryExec=muluos-package-creator
+Exec=muluos-package-creator
+Icon=package-x-generic
+Terminal=false
+Categories=Development;System;X-Muluos-development;

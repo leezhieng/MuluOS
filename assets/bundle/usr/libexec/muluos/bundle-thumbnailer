@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Generate a thumbnail for a MuluOS .exe bundle.
+
+Resolves the bundle's bundled icon (Resources/icons/<size>.png or the
+path declared in Info.json), then writes it at the requested size to
+the output file. Uses Pillow when available, falling back to a raw copy.
+
+Invoked by the freedesktop thumbnailer protocol:
+    bundle-thumbnailer <input-path> <output-path> <size>
+"""
+from __future__ import annotations
+import json
+import re
+import shutil
+import sys
+from pathlib import Path
+
+
+SIZE_RE = re.compile(r"(\d+)(?:x\d+)?\.png$", re.IGNORECASE)
+
+
+def find_icon(bundle: Path, want_size: int) -> Path | None:
+    candidates: list[tuple[int, Path]] = []
+
+    icons_dir = bundle / "Resources" / "icons"
+    if icons_dir.is_dir():
+        for p in icons_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = SIZE_RE.match(p.name)
+            if m:
+                candidates.append((int(m.group(1)), p))
+
+    info = bundle / "Info.json"
+    if info.is_file():
+        try:
+            data = json.loads(info.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = {}
+        ref = data.get("icon") if isinstance(data, dict) else None
+        if isinstance(ref, str):
+            p = (bundle / ref).resolve()
+            try:
+                p.relative_to(bundle)
+            except ValueError:
+                p = None
+            if p and p.is_file():
+                # Treat the explicit icon as high-quality / largest available.
+                candidates.append((max(want_size, 1024), p))
+
+    if not candidates:
+        return None
+
+    bigger = sorted((c for c in candidates if c[0] >= want_size), key=lambda c: c[0])
+    if bigger:
+        return bigger[0][1]
+    return max(candidates, key=lambda c: c[0])[1]
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 4:
+        print("usage: bundle-thumbnailer <bundle> <output.png> <size>", file=sys.stderr)
+        return 2
+
+    bundle = Path(argv[1]).resolve()
+    output = Path(argv[2])
+    try:
+        size = int(argv[3])
+    except ValueError:
+        size = 128
+
+    src = find_icon(bundle, size)
+    if src is None:
+        return 1
+
+    try:
+        from PIL import Image
+    except ImportError:
+        shutil.copyfile(src, output)
+        return 0
+
+    with Image.open(src) as im:
+        im = im.convert("RGBA")
+        im.thumbnail((size, size), Image.LANCZOS)
+        im.save(output, "PNG")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

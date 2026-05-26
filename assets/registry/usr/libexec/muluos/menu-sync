@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Generate KDE menu from MuluOS registry.
+
+Reads category definitions from machine-scope of the reserved bundle
+`muluos.system` and per-program menu metadata from each registered bundle,
+then writes .desktop / .directory / .menu files into the standard XDG paths.
+
+Convention — machine-scope keys on `muluos.system`:
+    menu.category.<id>.name    display name
+    menu.category.<id>.icon    icon name
+    menu.category.<id>.order   sort order (int)
+
+Convention — machine-scope keys on each program bundle:
+    menu.name      display name (default: bundle id)
+    menu.icon      icon name (default: application-x-executable)
+    menu.exec      exec command (default: launch-bundle <bundle path>)
+    menu.category  category id
+    menu.hidden    bool (default false)
+    menu.comment   description string
+"""
+from __future__ import annotations
+import sys
+from pathlib import Path
+
+import muluos_registry as reg
+
+SYSTEM_BUNDLE = "muluos.system"
+SYSTEM_BUNDLE_PATH = "/usr/lib/muluos"
+
+APPLICATIONS_DIR = Path("/usr/share/applications/muluos")
+DIRECTORIES_DIR = Path("/usr/share/desktop-directories")
+MERGED_MENU_DIR = Path("/etc/xdg/menus/applications-merged")
+MERGED_MENU_FILE = MERGED_MENU_DIR / "muluos.menu"
+
+CATEGORY_PREFIX = "X-Muluos-"
+
+DEFAULT_CATEGORIES = [
+    {"id": "applications", "name": "Applications", "icon": "applications-other", "order": 10},
+    {"id": "internet",     "name": "Internet",     "icon": "applications-internet", "order": 20},
+    {"id": "office",       "name": "Office",       "icon": "applications-office", "order": 30},
+    {"id": "graphics",     "name": "Graphics",     "icon": "applications-graphics", "order": 40},
+    {"id": "multimedia",   "name": "Multimedia",   "icon": "applications-multimedia", "order": 50},
+    {"id": "development",  "name": "Development",  "icon": "applications-development", "order": 60},
+    {"id": "games",        "name": "Games",        "icon": "applications-games", "order": 70},
+    {"id": "system",       "name": "System",       "icon": "applications-system", "order": 90},
+]
+
+
+def main() -> int:
+    client = reg.Client.connect_direct()
+    _ensure_system_bundle(client)
+    categories = _load_categories(client)
+    if not categories:
+        _seed_default_categories(client)
+        categories = _load_categories(client)
+    bundles = _load_bundles(client, categories)
+
+    _clean_output()
+    _write_directories(categories)
+    _write_desktops(bundles)
+    _write_menu(categories)
+    return 0
+
+
+def _ensure_system_bundle(client: reg.Client) -> None:
+    for b in client.list_bundles():
+        if b["id"] == SYSTEM_BUNDLE:
+            return
+    try:
+        client.register_bundle(SYSTEM_BUNDLE, SYSTEM_BUNDLE_PATH)
+    except reg.RegistryError:
+        pass
+
+
+def _load_categories(client: reg.Client) -> list[dict]:
+    try:
+        keys = client.machine_list(SYSTEM_BUNDLE, prefix="menu.category.")
+    except reg.RegistryError:
+        return []
+    by_id: dict[str, dict] = {}
+    for k in keys:
+        parts = k["key"].split(".")
+        if len(parts) < 4:
+            continue
+        cid, field = parts[2], parts[3]
+        by_id.setdefault(cid, {"id": cid, "name": cid, "icon": "folder", "order": 999})
+        by_id[cid][field] = k["value"]
+    return sorted(by_id.values(), key=lambda c: (int(c.get("order", 999)), c["id"]))
+
+
+def _seed_default_categories(client: reg.Client) -> None:
+    for c in DEFAULT_CATEGORIES:
+        client.machine_set(SYSTEM_BUNDLE, f"menu.category.{c['id']}.name", c["name"])
+        client.machine_set(SYSTEM_BUNDLE, f"menu.category.{c['id']}.icon", c["icon"])
+        client.machine_set(SYSTEM_BUNDLE, f"menu.category.{c['id']}.order", c["order"], type="int")
+
+
+def _load_bundles(client: reg.Client, categories: list[dict]) -> list[dict]:
+    valid = {c["id"] for c in categories}
+    out: list[dict] = []
+    for b in client.list_bundles():
+        bid, bpath = b["id"], b["path"]
+        if bid == SYSTEM_BUNDLE:
+            continue
+        try:
+            items = client.machine_list(bid, prefix="menu.")
+        except reg.RegistryError:
+            continue
+        meta = {item["key"]: item["value"] for item in items}
+        if meta.get("menu.hidden"):
+            continue
+        cat = meta.get("menu.category")
+        if cat not in valid:
+            continue
+        out.append({
+            "id": bid,
+            "path": bpath,
+            "name": meta.get("menu.name", bid),
+            "icon": meta.get("menu.icon", "application-x-executable"),
+            "exec": meta.get("menu.exec", f"/usr/libexec/muluos/launch-bundle {bpath}"),
+            "comment": meta.get("menu.comment", ""),
+            "category": cat,
+        })
+    return out
+
+
+def _clean_output() -> None:
+    APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    for f in APPLICATIONS_DIR.glob("*.desktop"):
+        f.unlink()
+    DIRECTORIES_DIR.mkdir(parents=True, exist_ok=True)
+    for f in DIRECTORIES_DIR.glob("muluos-*.directory"):
+        f.unlink()
+    MERGED_MENU_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _write_directories(categories: list[dict]) -> None:
+    for c in categories:
+        content = (
+            "[Desktop Entry]\n"
+            "Type=Directory\n"
+            f"Name={c.get('name', c['id'])}\n"
+            f"Icon={c.get('icon', 'folder')}\n"
+        )
+        (DIRECTORIES_DIR / f"muluos-{c['id']}.directory").write_text(content)
+
+
+def _write_desktops(bundles: list[dict]) -> None:
+    for b in bundles:
+        content = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={b['name']}\n"
+            f"Exec={b['exec']}\n"
+            f"Icon={b['icon']}\n"
+            f"Comment={b['comment']}\n"
+            f"Categories={CATEGORY_PREFIX}{b['category']};\n"
+            "X-MuluOS-Bundle=true\n"
+            f"X-MuluOS-Bundle-Id={b['id']}\n"
+        )
+        (APPLICATIONS_DIR / f"{b['id']}.desktop").write_text(content)
+
+
+def _write_menu(categories: list[dict]) -> None:
+    lines = [
+        '<!DOCTYPE Menu PUBLIC "-//freedesktop//DTD Menu 1.0//EN"',
+        '  "http://www.freedesktop.org/standards/menu-spec/menu-1.0.dtd">',
+        "<Menu>",
+        "    <Name>Applications</Name>",
+    ]
+    for c in categories:
+        cid = c["id"]
+        lines.extend([
+            "    <Menu>",
+            f"        <Name>muluos-{cid}</Name>",
+            f"        <Directory>muluos-{cid}.directory</Directory>",
+            "        <Include>",
+            f"            <Category>{CATEGORY_PREFIX}{cid}</Category>",
+            "        </Include>",
+            "    </Menu>",
+        ])
+    lines.append("</Menu>")
+    MERGED_MENU_FILE.write_text("\n".join(lines) + "\n")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
