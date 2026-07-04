@@ -4,7 +4,6 @@ PACKAGES = [
     "linux-lts",
     "linux-firmware-none",
     "openrc",
-    "busybox-initscripts",
     "e2fsprogs", "dosfstools", "btrfs-progs",
     "parted", "sgdisk",
     "grub", "grub-efi", "efibootmgr",
