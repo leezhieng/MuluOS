@@ -20,6 +20,17 @@ menuentry "MuluOS {version} ({profile}) - Install" {{
 }}
 """
 
+# GRUB core image modules — keep this list minimal so the core image stays small.
+BIOS_MODULES = "biosdisk iso9660"
+EFI_MODULES = (
+    "part_gpt part_msdos fat iso9660 ext2 "
+    "normal linux boot configfile search search_label search_fs_uuid "
+    "all_video efi_gop efi_uga gfxterm gfxmenu "
+    "test loadenv"
+)
+
+GRUB_LIB = Path("/usr/lib/grub")
+
 
 def assemble(rootfs_dir: Path, iso_dir: Path, output_dir: Path,
              *, profile, arch: str) -> Path:
@@ -34,6 +45,7 @@ def assemble(rootfs_dir: Path, iso_dir: Path, output_dir: Path,
     _copy_kernel(rootfs_dir, boot_dir)
     _write_grub_cfg(grub_dir, profile=profile)
     _pack_squashfs(rootfs_dir, live_dir / "rootfs.squashfs")
+    _prepare_boot_images(iso_dir)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     iso_path = output_dir / f"muluos-{config.VERSION}-{profile.NAME}-{arch}.iso"
@@ -77,6 +89,98 @@ def _pack_squashfs(rootfs_dir: Path, dst: Path) -> None:
         "mksquashfs", str(rootfs_dir), str(dst),
         "-comp", "zstd", "-Xcompression-level", "19", "-noappend",
     ])
+
+
+def _prepare_boot_images(iso_dir: Path) -> None:
+    """Generate GRUB El Torito (BIOS) and EFI boot images.
+
+    Copies platform modules from the host's /usr/lib/grub into the
+    ISO staging tree and builds:
+      * boot/grub/i386-pc/eltorito.img  – BIOS El Torito boot catalogue
+      * EFI/efiboot.img                 – FAT image wrapping bootx64.efi
+    """
+    if not GRUB_LIB.is_dir():
+        raise FileNotFoundError(
+            f"{GRUB_LIB} missing – install grub (apk add grub)"
+        )
+
+    # ── BIOS / i386-pc ──────────────────────────────────────────────
+    _copy_grub_modules("i386-pc", iso_dir / "boot" / "grub" / "i386-pc")
+    eltorito = iso_dir / "boot" / "grub" / "i386-pc" / "eltorito.img"
+    subprocess.check_call([
+        "grub-mkimage",
+        "-O", "i386-pc-eltorito",
+        "-o", str(eltorito),
+        "-p", "/boot/grub",
+        *BIOS_MODULES.split(),
+    ])
+    eltorito.chmod(0o644)
+
+    # ── EFI / x86_64-efi ────────────────────────────────────────────
+    _copy_grub_modules("x86_64-efi", iso_dir / "boot" / "grub" / "x86_64-efi")
+    efi_dir = iso_dir / "EFI" / "BOOT"
+    efi_dir.mkdir(parents=True, exist_ok=True)
+    bootx64 = efi_dir / "bootx64.efi"
+    subprocess.check_call([
+        "grub-mkimage",
+        "-O", "x86_64-efi",
+        "-o", str(bootx64),
+        "-p", "/boot/grub",
+        *EFI_MODULES.split(),
+    ])
+    bootx64.chmod(0o644)
+
+    # Wrap bootx64.efi inside a FAT filesystem image for the
+    # isohybrid El Torito alternate boot entry.
+    _make_fat_image(
+        iso_dir / "EFI" / "efiboot.img",
+        files=[(bootx64, "EFI/BOOT/bootx64.efi")],
+        size_mib=10,
+    )
+
+    # Clean up the loose bootx64.efi — it lives inside efiboot.img now.
+    bootx64.unlink()
+    try:
+        efi_dir.rmdir()  # only succeeds if empty
+    except OSError:
+        pass
+
+
+def _copy_grub_modules(platform: str, dst: Path) -> None:
+    """Copy GRUB platform modules from the host into *dst*."""
+    src = GRUB_LIB / platform
+    if not src.is_dir():
+        raise FileNotFoundError(f"GRUB platform missing: {src}")
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+def _make_fat_image(img_path: Path, *,
+                    files: list[tuple[Path, str]],
+                    size_mib: int = 10) -> None:
+    """Create a FAT image at *img_path* and copy *files* into it.
+
+    Each entry in *files* is (local_path, target_path_inside_image).
+    The image is sized to *size_mib* MiB (rounded up to sector boundary).
+    """
+    # Create and format the image.
+    subprocess.check_call([
+        "dd", "if=/dev/zero", f"of={img_path}",
+        f"bs={size_mib}M", "count=1",
+    ])
+    subprocess.check_call(["mkfs.vfat", "-F", "32", str(img_path)])
+
+    for local_path, target_path in files:
+        # Ensure parent directories exist inside the image.
+        parent = Path(target_path).parent
+        parts = parent.parts
+        for depth in range(1, len(parts) + 1):
+            subprocess.check_call(
+                ["mmd", "-i", str(img_path), "::" + "/".join(parts[:depth])],
+            )
+        subprocess.check_call([
+            "mcopy", "-i", str(img_path),
+            str(local_path), f"::{target_path}",
+        ])
 
 
 def _label_for(profile) -> str:
