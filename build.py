@@ -26,9 +26,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--work", type=Path, default=config.DEFAULT_WORK_DIR,
                    help="scratch directory for rootfs / squashfs staging")
     p.add_argument("--force-docker", action="store_true",
-                   help="build inside Docker even if the host is Alpine")
+                   help="build inside Docker even if the host is Debian")
     p.add_argument("--force-native", action="store_true",
-                   help="refuse to fall back to Docker; require Alpine host")
+                   help="refuse to fall back to Docker; require Debian host")
     p.add_argument("--keep-work", action="store_true",
                    help="leave the scratch dir on disk after the build")
     return p.parse_args(argv)

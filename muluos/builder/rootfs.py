@@ -1,5 +1,6 @@
-"""Bootstrap an Alpine rootfs via apk."""
+"""Bootstrap a Debian rootfs via debootstrap + apt-get."""
 from __future__ import annotations
+import os
 import subprocess
 from pathlib import Path
 
@@ -9,24 +10,35 @@ from muluos.profiles import base
 
 
 def build(rootfs_dir: Path, *, profile, arch: str) -> None:
+    """Bootstrap a Debian rootfs in two stages:
+
+    1. ``debootstrap --variant=minbase`` lays down the absolute minimum
+       Debian base (no kernel, no init, no apt — just dpkg + essential).
+    2. ``chroot apt-get install`` pulls in the full MuluOS package set
+       (base + profile + live) on top of that skeleton.
+
+    After packages are installed, overlays are copied in and the chroot
+    hook is run — just like the old Alpine path.
+    """
     rootfs_dir.mkdir(parents=True, exist_ok=True)
     packages = list(base.PACKAGES) + list(profile.PACKAGES) + list(live.PACKAGES)
 
-    repo_main = f"{config.ALPINE_MIRROR}/{config.ALPINE_BRANCH}/main"
-    repo_community = f"{config.ALPINE_MIRROR}/{config.ALPINE_BRANCH}/community"
-
+    # -- Stage 1: debootstrap ------------------------------------------------
     subprocess.check_call([
-        "apk",
-        "--arch", arch,
-        "-X", repo_main,
-        "-X", repo_community,
-        "-U", "--allow-untrusted",
-        "--root", str(rootfs_dir),
-        "--initdb",
-        "add", *packages,
+        "debootstrap",
+        "--arch", "amd64",
+        "--variant=minbase",
+        "--include=ca-certificates",
+        config.DEBIAN_CODENAME,
+        str(rootfs_dir),
+        config.DEBIAN_MIRROR,
     ])
 
-    _write_apk_repos(rootfs_dir, repo_main, repo_community)
+    # -- Stage 2: apt-get install the full package set -----------------------
+    _write_apt_sources(rootfs_dir)
+    _chroot_apt_install(rootfs_dir, packages)
+
+    # -- Post-install (same overlay + hook pattern as before) -----------------
     _write_live_marker(rootfs_dir)
     _install_installer(rootfs_dir)
     registry.install(rootfs_dir)
@@ -36,14 +48,45 @@ def build(rootfs_dir: Path, *, profile, arch: str) -> None:
     _run_chroot_hook(rootfs_dir, profile=profile)
 
 
-def _write_apk_repos(rootfs_dir: Path, *repos: str) -> None:
-    etc_apk = rootfs_dir / "etc" / "apk"
-    etc_apk.mkdir(parents=True, exist_ok=True)
-    (etc_apk / "repositories").write_text("\n".join(repos) + "\n")
+def _write_apt_sources(rootfs_dir: Path) -> None:
+    """Write /etc/apt/sources.list so apt-get can find packages."""
+    sl = rootfs_dir / "etc" / "apt" / "sources.list"
+    sl.parent.mkdir(parents=True, exist_ok=True)
+    sl.write_text(
+        f"deb {config.DEBIAN_MIRROR} {config.DEBIAN_CODENAME} {config.DEBIAN_COMPONENTS}\n"
+        f"deb {config.DEBIAN_MIRROR} {config.DEBIAN_CODENAME}-updates {config.DEBIAN_COMPONENTS}\n"
+        f"deb {config.DEBIAN_SECURITY} {config.DEBIAN_CODENAME}-security {config.DEBIAN_COMPONENTS}\n"
+    )
+
+
+def _chroot_apt_install(rootfs_dir: Path, packages: list[str]) -> None:
+    """Run apt-get update && apt-get install inside the chroot."""
+    env = {
+        **os.environ,
+        "DEBIAN_FRONTEND": "noninteractive",
+        "DEBCONF_NONINTERACTIVE_SEEN": "true",
+        "LC_ALL": "C",
+        "LANGUAGE": "C",
+        "LANG": "C",
+    }
+    subprocess.check_call(
+        ["chroot", str(rootfs_dir), "apt-get", "update"],
+        env=env,
+    )
+    subprocess.check_call(
+        ["chroot", str(rootfs_dir), "apt-get", "install", "-y",
+         "--no-install-recommends", *packages],
+        env=env,
+    )
+    # Shrink the image by cleaning the apt cache.
+    subprocess.check_call(
+        ["chroot", str(rootfs_dir), "apt-get", "clean"],
+        env=env,
+    )
 
 
 def _write_live_marker(rootfs_dir: Path) -> None:
-    # Installer reads this to know which packages to prune on a CLI install.
+    """Installer reads this to know which packages to prune on a CLI install."""
     marker = rootfs_dir / "etc" / "muluos-live-packages"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("\n".join(live.PACKAGES) + "\n")
@@ -58,12 +101,12 @@ def _install_installer(rootfs_dir: Path) -> None:
 
 
 def _run_chroot_hook(rootfs_dir: Path, *, profile) -> None:
-    hook_src = config.SCRIPTS_DIR / "chroot-hook.sh"
-    hook_dst = rootfs_dir / "tmp" / "chroot-hook.sh"
+    hook_src = config.SCRIPTS_DIR / "chroot-hook-debian.sh"
+    hook_dst = rootfs_dir / "tmp" / "chroot-hook-debian.sh"
     hook_dst.parent.mkdir(parents=True, exist_ok=True)
     hook_dst.write_bytes(hook_src.read_bytes())
     hook_dst.chmod(0o755)
     subprocess.check_call([
-        "chroot", str(rootfs_dir), "/tmp/chroot-hook.sh", profile.NAME,
+        "chroot", str(rootfs_dir), "/tmp/chroot-hook-debian.sh", profile.NAME,
     ])
     hook_dst.unlink()

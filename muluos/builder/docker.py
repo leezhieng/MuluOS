@@ -1,4 +1,4 @@
-"""Run the build inside an Alpine container."""
+"""Run the build inside a Debian container."""
 from __future__ import annotations
 import subprocess
 from pathlib import Path
@@ -6,8 +6,9 @@ from pathlib import Path
 from muluos import config
 
 BUILD_DEPS = (
-    "python3 py3-pip alpine-sdk apk-tools "
-    "squashfs-tools xorriso grub grub-efi mtools dosfstools rsync"
+    "python3 python3-pip build-essential "
+    "squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin "
+    "mtools dosfstools rsync debootstrap"
 )
 
 
@@ -15,7 +16,8 @@ def run(*, profile, arch: str, output_dir: Path, work_dir: Path, keep_work: bool
     output_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     inner = (
-        f"apk add --no-cache {BUILD_DEPS} && "
+        f"apt-get update && "
+        f"apt-get install -y --no-install-recommends {BUILD_DEPS} && "
         f"python3 build.py --profile {profile.NAME} --arch {arch} "
         f"--work /work --output /dist --force-native"
         f"{' --keep-work' if keep_work else ''}"
@@ -26,7 +28,7 @@ def run(*, profile, arch: str, output_dir: Path, work_dir: Path, keep_work: bool
         "-v", f"{work_dir}:/work",
         "-v", f"{output_dir}:/dist",
         "-w", "/src",
-        config.DOCKER_IMAGE,
+        config.DOCKER_IMAGES[config.Distribution.DEBIAN],
         "sh", "-c", inner,
     ]
     return subprocess.call(cmd)

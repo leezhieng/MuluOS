@@ -32,9 +32,12 @@ def copy_rootfs(disk: str, cfg: dict) -> None:
 
 
 def _prune_live_packages() -> None:
-    # Remove live-only X + PyQt6 + agetty from the target. No-op on KDE since
-    # plasma re-installs the same packages. Best-effort: apk lacks an
-    # autoremove, so transitive orphans may remain.
+    """Remove live-only X + PyQt6 packages from the target.
+
+    No-op on KDE since plasma re-installs the same packages.
+    Uses ``apt-get purge`` (the Debian equivalent of Alpine's ``apk del``)
+    followed by ``apt-get autopurge`` to clean transitive orphans.
+    """
     profile_marker = TARGET / "etc" / "muluos-profile"
     if not profile_marker.exists() or profile_marker.read_text().strip() == "kde":
         return
@@ -45,7 +48,11 @@ def _prune_live_packages() -> None:
     if not packages:
         return
     subprocess.run(
-        ["chroot", str(TARGET), "apk", "del", *packages],
+        ["chroot", str(TARGET), "apt-get", "purge", "-y", *packages],
+        check=False,
+    )
+    subprocess.run(
+        ["chroot", str(TARGET), "apt-get", "autopurge", "-y"],
         check=False,
     )
     packages_file.unlink()
@@ -57,9 +64,9 @@ def _enable_profile_services() -> None:
         return
     profile = marker.read_text().strip()
     if profile == "kde":
-        for svc in ("dbus", "sddm", "muluos-menu-sync"):
+        for unit in ("dbus", "sddm", "muluos-menu-sync"):
             subprocess.check_call([
-                "chroot", str(TARGET), "rc-update", "add", svc, "default",
+                "chroot", str(TARGET), "systemctl", "enable", unit,
             ])
 
 
@@ -69,14 +76,15 @@ def _write_hostname(hostname: str) -> None:
 
 def _write_timezone(tz: str) -> None:
     subprocess.check_call([
-        "chroot", str(TARGET), "ln", "-sf", f"/usr/share/zoneinfo/{tz}", "/etc/localtime",
+        "chroot", str(TARGET), "ln", "-sf",
+        f"/usr/share/zoneinfo/{tz}", "/etc/localtime",
     ])
 
 
 def _create_user(username: str, password: str) -> None:
     subprocess.check_call([
         "chroot", str(TARGET),
-        "adduser", "-D", "-G", "wheel", "-s", "/bin/sh", username,
+        "useradd", "-m", "-G", "sudo", "-s", "/bin/bash", username,
     ])
     subprocess.run(
         ["chroot", str(TARGET), "chpasswd"],

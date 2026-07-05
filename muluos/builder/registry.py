@@ -11,6 +11,7 @@ EXECUTABLE_PATHS = (
     "usr/libexec/muluos/menu-sync",
     "usr/bin/muluos-reg",
     "usr/bin/muluos-bundle",
+    # Alpine OpenRC init scripts (kept for backward compat).
     "etc/init.d/muluos-registryd",
     "etc/init.d/muluos-menu-sync",
 )
@@ -24,3 +25,5 @@ def install(rootfs_dir: Path) -> None:
         target = rootfs_dir / rel
         if target.is_file():
             target.chmod(0o755)
+    # Systemd units are not executable — they just need correct ownership
+    # (root:root) which copytree preserves.

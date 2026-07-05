@@ -1,0 +1,12 @@
+[Unit]
+Description=Render /etc/profile.d/muluos-env.sh from the MuluOS registry
+Documentation=https://github.com/LeeZhiEng/MuluOS
+After=muluos-registryd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/muluos/env-generate
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

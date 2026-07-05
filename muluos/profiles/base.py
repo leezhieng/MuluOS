@@ -1,18 +1,29 @@
-"""Packages shared by every MuluOS profile."""
+"""Packages shared by every MuluOS profile (Debian)."""
 PACKAGES = [
-    "alpine-base",
-    "linux-lts",
-    "linux-firmware-none",
-    "openrc",
+    # Kernel
+    "linux-image-amd64",
+    # Init system
+    "systemd-sysv", "dbus",
+    # Package management
+    "apt", "apt-utils",
+    # Filesystem tools
     "e2fsprogs", "dosfstools", "btrfs-progs",
-    "parted", "sgdisk",
-    "grub", "grub-efi", "efibootmgr",
-    "python3", "py3-pip",
-    "networkmanager",
-    "openssh",
+    # Partitioning
+    "parted", "gdisk",
+    # Bootloader
+    "grub-pc-bin", "grub-efi-amd64-bin", "efibootmgr",
+    # Base system
+    "python3", "python3-pip",
+    "network-manager",
+    "openssh-server",
     "sudo",
     "nano",
     "tzdata",
     "rsync",
-    "lsblk",
+    "util-linux",
+    # Live boot support
+    "live-boot", "live-boot-initramfs-tools",
+    "squashfs-tools",
+    # Initramfs
+    "initramfs-tools",
 ]

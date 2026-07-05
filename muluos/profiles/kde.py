@@ -1,15 +1,22 @@
-"""Desktop profile: KDE Plasma. To be heavily customized later."""
+"""Desktop profile: KDE Plasma (Debian). To be heavily customized later."""
 NAME = "kde"
 PACKAGES = [
-    "xorg-server", "xf86-input-libinput", "mesa-dri-gallium",
+    # X server + input
+    "xserver-xorg", "xserver-xorg-input-libinput", "libgl1-mesa-dri",
+    # KDE Plasma
     "plasma-desktop", "plasma-workspace",
     "sddm", "sddm-kcm",
     "konsole", "dolphin",
     "kate",
-    "firefox",
-    "py3-qt6",
+    "firefox-esr",
+    # Python Qt6 bindings
+    "python3-pyqt6",
+    # Audio
     "pipewire", "pipewire-pulse", "wireplumber",
-    "ttf-dejavu", "ttf-liberation",
+    # Fonts
+    "fonts-dejavu", "fonts-liberation",
+    # MIME + desktop database
     "shared-mime-info", "desktop-file-utils",
-    "py3-pillow",
+    # Python imaging
+    "python3-pillow",
 ]

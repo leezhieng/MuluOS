@@ -1,22 +1,25 @@
-"""Pack the rootfs into a squashfs and emit a hybrid ISO."""
+"""Pack the Debian rootfs into a squashfs and emit a hybrid ISO."""
 from __future__ import annotations
+import glob as glob_mod
 import shutil
 import subprocess
 from pathlib import Path
 
 from muluos import config
 
+# Debian's live-boot uses ``boot=live`` (not dracut's ``root=live:``).
+# ``components`` tells live-boot to look for a squashfs filesystem image.
 GRUB_CFG_TEMPLATE = """\
 set timeout=5
 set default=0
 
 menuentry "MuluOS {version} ({profile}) - Live" {{
-    linux /boot/vmlinuz-lts root=live:LABEL={label} rd.live.image muluos.mode=live quiet
-    initrd /boot/initramfs-lts
+    linux /boot/vmlinuz boot=live components quiet splash muluos.mode=live
+    initrd /boot/initrd.img
 }}
 menuentry "MuluOS {version} ({profile}) - Install" {{
-    linux /boot/vmlinuz-lts root=live:LABEL={label} rd.live.image muluos.mode=live muluos.installer=auto
-    initrd /boot/initramfs-lts
+    linux /boot/vmlinuz boot=live components quiet splash muluos.mode=live muluos.installer=auto
+    initrd /boot/initrd.img
 }}
 """
 
@@ -68,12 +71,24 @@ def assemble(rootfs_dir: Path, iso_dir: Path, output_dir: Path,
 
 
 def _copy_kernel(rootfs_dir: Path, boot_dir: Path) -> None:
+    """Discover and copy the Debian kernel + initramfs into the ISO staging tree.
+
+    Debian uses versioned filenames (``vmlinuz-6.1.0-XX-amd64``,
+    ``initrd.img-6.1.0-XX-amd64``).  We glob for them and copy the first
+    match under the fixed names ``vmlinuz`` / ``initrd.img`` so the GRUB
+    template doesn't need to know the exact kernel version.
+    """
     src_boot = rootfs_dir / "boot"
-    for name in ("vmlinuz-lts", "initramfs-lts"):
-        src = src_boot / name
-        if not src.exists():
-            raise FileNotFoundError(f"missing {src}: did mkinitfs run?")
-        shutil.copy2(src, boot_dir / name)
+    vmlinuz_candidates = sorted(src_boot.glob("vmlinuz-*"))
+    initrd_candidates = sorted(src_boot.glob("initrd.img-*"))
+
+    if not vmlinuz_candidates:
+        raise FileNotFoundError(f"No vmlinuz-* found in {src_boot}")
+    if not initrd_candidates:
+        raise FileNotFoundError(f"No initrd.img-* found in {src_boot}")
+
+    shutil.copy2(vmlinuz_candidates[0], boot_dir / "vmlinuz")
+    shutil.copy2(initrd_candidates[0], boot_dir / "initrd.img")
 
 
 def _write_grub_cfg(grub_dir: Path, *, profile) -> None:
@@ -101,7 +116,7 @@ def _prepare_boot_images(iso_dir: Path) -> None:
     """
     if not GRUB_LIB.is_dir():
         raise FileNotFoundError(
-            f"{GRUB_LIB} missing – install grub (apk add grub)"
+            f"{GRUB_LIB} missing – install grub (apt install grub-pc-bin grub-efi-amd64-bin)"
         )
 
     # ── BIOS / i386-pc ──────────────────────────────────────────────

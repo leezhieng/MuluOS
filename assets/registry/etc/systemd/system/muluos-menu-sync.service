@@ -1,0 +1,13 @@
+[Unit]
+Description=Regenerate KDE menu from MuluOS registry
+Documentation=https://github.com/LeeZhiEng/MuluOS
+After=muluos-registryd.service
+Before=sddm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/muluos/menu-sync
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -8,7 +8,9 @@ laid out by install destination, e.g.:
     utils/<tool>/usr/share/applications/muluos-<tool>.desktop
 
 Every tool tree is copied over the rootfs. Files landing under usr/bin,
-usr/sbin, or usr/libexec/muluos are marked executable.
+usr/sbin, or usr/libexec/muluos are marked executable.  Systemd units
+(etc/systemd/system) are excluded from the executable sweep — they must
+remain 0644.
 """
 from __future__ import annotations
 import shutil
@@ -17,7 +19,10 @@ from pathlib import Path
 from muluos import config
 
 UTILS_DIR = config.REPO_ROOT / "utils"
-EXECUTABLE_PARENTS = ("usr/bin", "usr/sbin", "usr/libexec/muluos", "etc/init.d")
+EXECUTABLE_PARENTS = (
+    "usr/bin", "usr/sbin", "usr/libexec/muluos",
+    "etc/init.d",               # Alpine OpenRC scripts
+)
 
 
 def install(rootfs_dir: Path) -> None:
