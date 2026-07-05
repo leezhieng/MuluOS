@@ -1,11 +1,23 @@
 """Pack the Debian rootfs into a squashfs and emit a hybrid ISO."""
 from __future__ import annotations
 import glob as glob_mod
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 from muluos import config
+
+# mkfs.vfat lives in /usr/sbin on Debian, which may not be on a regular
+# user's PATH.  Resolve sbin tools once at import time.
+_SBIN_PATH = os.environ.get("PATH", "") + ":/usr/sbin:/sbin:/usr/local/sbin"
+_MKFS_VFAT = shutil.which("mkfs.vfat", path=_SBIN_PATH)
+if _MKFS_VFAT is None:
+    raise SystemExit(
+        "Missing required build tool: mkfs.vfat\n"
+        "Install it with:  sudo apt install -y dosfstools\n"
+        "See docs/building-and-testing.md §4 for the full list."
+    )
 
 # Debian's live-boot uses ``boot=live`` (not dracut's ``root=live:``).
 # ``components`` tells live-boot to look for a squashfs filesystem image.
@@ -182,7 +194,7 @@ def _make_fat_image(img_path: Path, *,
         "dd", "if=/dev/zero", f"of={img_path}",
         f"bs={size_mib}M", "count=1",
     ])
-    subprocess.check_call(["mkfs.vfat", "-F", "32", str(img_path)])
+    subprocess.check_call([_MKFS_VFAT, "-F", "32", str(img_path)])
 
     for local_path, target_path in files:
         # Ensure parent directories exist inside the image.

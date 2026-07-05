@@ -9,31 +9,32 @@ from muluos import config
 from muluos.builder import bundle, live, registry, settings, utils
 from muluos.profiles import base
 
-_REQUIRED_TOOLS = ("debootstrap", "chroot", "mksquashfs", "xorriso")
-
-# Debian places debootstrap and chroot in /usr/sbin, which may not be on a
-# regular user's PATH (unlike root's).  Prepend sbin dirs to the search path
-# so the check matches what subprocess will find when they are there.
+# Debian places debootstrap and chroot in /usr/sbin, which is not on a
+# regular user's PATH (only root's).  Resolve them once at import time
+# with an augmented search path that includes sbin directories.
 _SBIN_PATH = os.environ.get("PATH", "") + ":/usr/sbin:/sbin:/usr/local/sbin"
 
 
-def _which(tool: str) -> str | None:
-    """Like shutil.which but also searches /usr/sbin and /sbin."""
-    return shutil.which(tool, path=_SBIN_PATH)
-
-
-def _check_tools() -> None:
-    """Verify required host tools are available before the build starts."""
-    missing = [t for t in _REQUIRED_TOOLS if _which(t) is None]
-    if missing:
+def _resolve(tool: str) -> str:
+    """Return the absolute path to *tool* or raise SystemExit if missing."""
+    path = shutil.which(tool, path=_SBIN_PATH)
+    if path is None:
         raise SystemExit(
-            "Missing required build tools: " + ", ".join(missing) + "\n"
-            "Install them with:\n"
+            f"Missing required build tool: {tool}\n"
+            "Install it with:\n"
             "  sudo apt install -y git python3 python3-pip build-essential \\\n"
             "      squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \\\n"
             "      mtools dosfstools rsync debootstrap\n"
             "\nSee docs/building-and-testing.md §4 for the full list."
         )
+    return path
+
+
+# Resolved tool paths — use these everywhere instead of bare names.
+DEBOOTSTRAP = _resolve("debootstrap")
+CHROOT = _resolve("chroot")
+MKSQUASHFS = _resolve("mksquashfs")
+XORRISO = _resolve("xorriso")
 
 
 def build(rootfs_dir: Path, *, profile, arch: str) -> None:
@@ -47,13 +48,12 @@ def build(rootfs_dir: Path, *, profile, arch: str) -> None:
     After packages are installed, overlays are copied in and the chroot
     hook is run — just like the old Alpine path.
     """
-    _check_tools()
     rootfs_dir.mkdir(parents=True, exist_ok=True)
     packages = list(base.PACKAGES) + list(profile.PACKAGES) + list(live.PACKAGES)
 
     # -- Stage 1: debootstrap ------------------------------------------------
     subprocess.check_call([
-        "debootstrap",
+        DEBOOTSTRAP,
         "--arch", "amd64",
         "--variant=minbase",
         "--include=ca-certificates",
@@ -98,17 +98,17 @@ def _chroot_apt_install(rootfs_dir: Path, packages: list[str]) -> None:
         "LANG": "C",
     }
     subprocess.check_call(
-        ["chroot", str(rootfs_dir), "apt-get", "update"],
+        [CHROOT, str(rootfs_dir), "apt-get", "update"],
         env=env,
     )
     subprocess.check_call(
-        ["chroot", str(rootfs_dir), "apt-get", "install", "-y",
+        [CHROOT, str(rootfs_dir), "apt-get", "install", "-y",
          "--no-install-recommends", *packages],
         env=env,
     )
     # Shrink the image by cleaning the apt cache.
     subprocess.check_call(
-        ["chroot", str(rootfs_dir), "apt-get", "clean"],
+        [CHROOT, str(rootfs_dir), "apt-get", "clean"],
         env=env,
     )
 
@@ -135,6 +135,6 @@ def _run_chroot_hook(rootfs_dir: Path, *, profile) -> None:
     hook_dst.write_bytes(hook_src.read_bytes())
     hook_dst.chmod(0o755)
     subprocess.check_call([
-        "chroot", str(rootfs_dir), "/tmp/chroot-hook-debian.sh", profile.NAME,
+        CHROOT, str(rootfs_dir), "/tmp/chroot-hook-debian.sh", profile.NAME,
     ])
     hook_dst.unlink()
