@@ -52,6 +52,12 @@ def build(rootfs_dir: Path, *, profile, arch: str) -> None:
     packages = list(base.PACKAGES) + list(profile.PACKAGES) + list(live.PACKAGES)
 
     # -- Stage 1: debootstrap ------------------------------------------------
+    # Trixie's tar 1.35+ enables --xattrs by default, which breaks dpkg-deb's
+    # internal tar extraction.  Disable xattrs for the debootstrap run.
+    debootstrap_env = {
+        **os.environ,
+        "TAR_OPTIONS": "--no-xattrs",
+    }
     subprocess.check_call([
         DEBOOTSTRAP,
         "--arch", "amd64",
@@ -60,7 +66,7 @@ def build(rootfs_dir: Path, *, profile, arch: str) -> None:
         config.DEBIAN_CODENAME,
         str(rootfs_dir),
         config.DEBIAN_MIRROR,
-    ])
+    ], env=debootstrap_env)
 
     # -- Stage 2: apt-get install the full package set -----------------------
     _write_apt_sources(rootfs_dir)
