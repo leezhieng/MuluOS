@@ -23,7 +23,7 @@ ALPINE_MIRROR = "https://dl-cdn.alpinelinux.org/alpine"
 
 # ── Debian constants ──────────────────────────────────────────────────────────
 
-DEBIAN_CODENAME = "bookworm"                # Debian 12
+DEBIAN_CODENAME = "trixie"                  # Debian 13 (testing)
 DEBIAN_MIRROR = "http://deb.debian.org/debian"
 DEBIAN_COMPONENTS = "main contrib non-free non-free-firmware"
 DEBIAN_SECURITY = "http://security.debian.org/debian-security"
@@ -42,7 +42,7 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "dist"
 
 DOCKER_IMAGES = {
     Distribution.ALPINE: "alpine:3.21",
-    Distribution.DEBIAN: "debian:bookworm-slim",
+    Distribution.DEBIAN: "debian:trixie-slim",
 }
 
 # Legacy alias (used before multi-distro support was added).
