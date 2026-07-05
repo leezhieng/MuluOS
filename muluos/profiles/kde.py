@@ -5,7 +5,7 @@ PACKAGES = [
     "xserver-xorg", "xserver-xorg-input-libinput", "libgl1-mesa-dri",
     # KDE Plasma
     "plasma-desktop", "plasma-workspace",
-    "sddm", "sddm-kcm",
+    "sddm", "kde-config-sddm",
     "konsole", "dolphin",
     "kate",
     "firefox-esr",
