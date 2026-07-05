@@ -11,10 +11,20 @@ from muluos.profiles import base
 
 _REQUIRED_TOOLS = ("debootstrap", "chroot", "mksquashfs", "xorriso")
 
+# Debian places debootstrap and chroot in /usr/sbin, which may not be on a
+# regular user's PATH (unlike root's).  Prepend sbin dirs to the search path
+# so the check matches what subprocess will find when they are there.
+_SBIN_PATH = os.environ.get("PATH", "") + ":/usr/sbin:/sbin:/usr/local/sbin"
+
+
+def _which(tool: str) -> str | None:
+    """Like shutil.which but also searches /usr/sbin and /sbin."""
+    return shutil.which(tool, path=_SBIN_PATH)
+
 
 def _check_tools() -> None:
-    """Verify required host tools are on PATH before the build starts."""
-    missing = [t for t in _REQUIRED_TOOLS if shutil.which(t) is None]
+    """Verify required host tools are available before the build starts."""
+    missing = [t for t in _REQUIRED_TOOLS if _which(t) is None]
     if missing:
         raise SystemExit(
             "Missing required build tools: " + ", ".join(missing) + "\n"
