@@ -21,7 +21,6 @@ from muluos import config
 UTILS_DIR = config.REPO_ROOT / "utils"
 EXECUTABLE_PARENTS = (
     "usr/bin", "usr/sbin", "usr/libexec/muluos",
-    "etc/init.d",               # Alpine OpenRC scripts
 )
 
 

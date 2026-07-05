@@ -11,9 +11,6 @@ EXECUTABLE_PATHS = (
     "usr/libexec/muluos/menu-sync",
     "usr/bin/muluos-reg",
     "usr/bin/muluos-bundle",
-    # Alpine OpenRC init scripts (kept for backward compat).
-    "etc/init.d/muluos-registryd",
-    "etc/init.d/muluos-menu-sync",
 )
 
 
