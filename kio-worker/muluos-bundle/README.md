@@ -51,7 +51,7 @@ The scaffold leans toward (B); see the long comment at the top of the
 You need a Plasma 6 development environment:
 
 ```sh
-sudo apk add extra-cmake-modules kf6-kio-dev qt6-qtbase-dev cmake make g++
+sudo apt install extra-cmake-modules libkf6kio-dev qt6-base-dev cmake make g++
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)

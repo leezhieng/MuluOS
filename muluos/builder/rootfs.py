@@ -1,12 +1,29 @@
 """Bootstrap a Debian rootfs via debootstrap + apt-get."""
 from __future__ import annotations
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 from muluos import config
 from muluos.builder import bundle, live, registry, settings, utils
 from muluos.profiles import base
+
+_REQUIRED_TOOLS = ("debootstrap", "chroot", "mksquashfs", "xorriso")
+
+
+def _check_tools() -> None:
+    """Verify required host tools are on PATH before the build starts."""
+    missing = [t for t in _REQUIRED_TOOLS if shutil.which(t) is None]
+    if missing:
+        raise SystemExit(
+            "Missing required build tools: " + ", ".join(missing) + "\n"
+            "Install them with:\n"
+            "  sudo apt install -y git python3 python3-pip build-essential \\\n"
+            "      squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \\\n"
+            "      mtools dosfstools rsync debootstrap\n"
+            "\nSee docs/building-and-testing.md §4 for the full list."
+        )
 
 
 def build(rootfs_dir: Path, *, profile, arch: str) -> None:
@@ -20,6 +37,7 @@ def build(rootfs_dir: Path, *, profile, arch: str) -> None:
     After packages are installed, overlays are copied in and the chroot
     hook is run — just like the old Alpine path.
     """
+    _check_tools()
     rootfs_dir.mkdir(parents=True, exist_ok=True)
     packages = list(base.PACKAGES) + list(profile.PACKAGES) + list(live.PACKAGES)
 

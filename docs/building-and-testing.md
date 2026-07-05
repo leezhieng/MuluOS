@@ -131,6 +131,25 @@ su -
 # enter root password
 ```
 
+### 3.3 Make the user a sudoer
+
+Debian does not automatically add the first user to the `sudo` group when
+a root password is set during install.  Add the builder user to `sudo` now:
+
+```bash
+# (as root)
+apt install -y sudo
+usermod -aG sudo builder
+```
+
+Log out and back in (or start a new login shell with `su - builder`) for
+the group membership to take effect.  Verify with:
+
+```bash
+groups
+# should show: builder ... sudo ...
+```
+
 ---
 
 ## 4. Install Build Dependencies
@@ -139,13 +158,14 @@ Update the package index and install the tools required to build MuluOS:
 
 ```bash
 apt update
-apt install -y git python3 python3-pip build-essential \
+apt install -y sudo git python3 python3-pip build-essential \
     squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \
     mtools dosfstools rsync debootstrap
 ```
 
 | Package | Purpose |
 |---------|---------|
+| `sudo` | Run commands as root |
 | `git` | Clone the MuluOS repository |
 | `python3` / `python3-pip` | Run `build.py` and the installer |
 | `build-essential` | C compiler + make (for any kernel modules) |

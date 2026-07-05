@@ -16,7 +16,7 @@ This document describes what to put in [`assets/branding/`](../assets/branding/)
 | File | Purpose |
 |---|---|
 | `grub-background.png` | 1920×1080. Used as `GRUB_BACKGROUND` in the installed system's `/etc/default/grub`. Wire up in [`muluos/builder/iso.py`](../muluos/builder/iso.py) for the live ISO's GRUB too. |
-| `plymouth/` | Directory for a Plymouth boot splash theme (`.plymouth`, `.script`, frame PNGs). Optional. Alpine doesn't ship Plymouth by default — add `plymouth` to [`muluos/profiles/base.py`](../muluos/profiles/base.py) if you want this. |
+| `plymouth/` | Directory for a Plymouth boot splash theme (`.plymouth`, `.script`, frame PNGs). Optional. Add `plymouth` and `plymouth-themes` to [`muluos/profiles/base.py`](../muluos/profiles/base.py) if you want this. |
 
 ## Login (KDE profile only)
 
@@ -48,7 +48,7 @@ At least one wallpaper resolution is required. Installed to `/usr/share/backgrou
 | File | Purpose |
 |---|---|
 | `motd` | Text file shown on CLI login (the `cli` profile). Copied to `/etc/motd`. |
-| `os-release` | Overrides `/etc/os-release` with MuluOS identity (`NAME=MuluOS`, `PRETTY_NAME=...`, `HOME_URL=...`). **Important** — without this the installed system still reports itself as Alpine. |
+| `os-release` | Overrides `/etc/os-release` with MuluOS identity (`NAME=MuluOS`, `PRETTY_NAME=...`, `HOME_URL=...`). **Important** — without this the installed system still reports itself as Debian. |
 | `issue` | Pre-login banner at `/etc/issue`. |
 
 ## Minimum viable set
@@ -67,6 +67,6 @@ Everything else can come later.
 
 None of the assets above are read by the build yet. Once files are added, the consumption points are:
 
-- [`scripts/chroot-hook.sh`](../scripts/chroot-hook.sh) — should copy `os-release`, `motd`, `issue`, wallpapers, SDDM theme, icon PNGs into the rootfs.
+- [`scripts/chroot-hook-debian.sh`](../scripts/chroot-hook-debian.sh) — should copy `os-release`, `motd`, `issue`, wallpapers, SDDM theme, icon PNGs into the rootfs.
 - [`muluos/builder/iso.py`](../muluos/builder/iso.py) — should reference `grub-background.png` when writing the live ISO's GRUB config.
 - [`muluos/installer/main.py`](../muluos/installer/main.py) — should call `setPixmap` for the banner and logo.

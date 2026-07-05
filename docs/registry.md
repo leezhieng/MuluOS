@@ -12,7 +12,7 @@ process start.
 | Daemon | `/usr/libexec/muluos/registryd` | Listens on a Unix socket, owns the SQLite database |
 | Database | `/var/lib/muluos/registry.sqlite` | WAL-mode SQLite, mode 0600 (root only) |
 | Socket | `/run/muluos/registry.sock` | World-connectable; authorization is per-op |
-| OpenRC service | `/etc/init.d/muluos-registryd` | Starts the daemon at boot |
+| systemd service | `/etc/systemd/system/muluos-registryd.service` | Starts the daemon at boot |
 | Client lib | `/usr/lib/muluos/muluos_registry.py` | `import muluos_registry` in any bundle |
 | Low-level CLI | `/usr/bin/muluos-reg` | Machine-scope reads/writes, bundle (un)registration |
 | Install CLI | `/usr/bin/muluos-bundle` | High-level install — registers a bundle and creates its app-menu entry |

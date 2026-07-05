@@ -9,7 +9,7 @@ build flows together.
 MuluOS/
 ├── build.py                 # entry point: orchestrates a build
 ├── muluos/                  # the build-system Python package (runs on host)
-│   ├── config.py            # constants: paths, Alpine branch, mirror, image
+│   ├── config.py            # constants: paths, Debian codename, mirror, Docker image
 │   ├── builder/             # rootfs/iso/kernel/docker glue
 │   ├── installer/           # OS installer (lands in the image at /opt/installer)
 │   └── profiles/            # package set per profile (cli, kde, base)
@@ -18,7 +18,8 @@ MuluOS/
 │   ├── bundle/              # overlay: MIME, launcher, thumbnailer (.exe bundle support)
 │   └── registry/            # overlay: registry daemon, client lib, CLIs
 ├── scripts/
-│   └── chroot-hook.sh       # runs inside the freshly-bootstrapped rootfs
+│   ├── chroot-hook.sh            # Alpine variant (OpenRC, kept for backward compat)
+│   └── chroot-hook-debian.sh     # Debian variant (systemd, active)
 ├── kio-worker/              # C++/Qt scaffolds (not part of the Python build)
 └── docs/
 ```
@@ -29,13 +30,14 @@ MuluOS/
 producing the ISO. It is *never installed into the target system*.
 Internally it has:
 
-- `muluos.config` — constants used everywhere (mirror URLs, paths).
+- `muluos.config` — constants used everywhere (mirror URLs, paths, `Distribution` enum).
 - `muluos.profiles.{base, cli, kde}` — flat `PACKAGES` lists. `base` is
   shared by every profile; `cli` and `kde` add on top.
-- `muluos.builder.rootfs.build()` — the master function. It runs `apk`
-  to bootstrap an Alpine rootfs, copies the installer into `/opt/installer`,
+- `muluos.builder.rootfs.build()` — the master function. It runs `debootstrap`
+  to bootstrap a minimal Debian rootfs, then `chroot apt-get install` to
+  pull in the full package set, copies the installer into `/opt/installer`,
   installs the registry overlay, installs the bundle overlay, then runs
-  the chroot hook to enable services and refresh databases.
+  the chroot hook to enable systemd services and refresh databases.
 - `muluos.builder.{registry, bundle}` — host-side helpers that
   recursively copy an overlay tree from `assets/` into the rootfs and
   chmod the scripts inside it. Same shape, different overlays.
@@ -54,22 +56,24 @@ goes through an overlay.
 | Overlay | Lands at | Contents |
 |---|---|---|
 | `assets/bundle/` | rootfs `/` | MIME XML, thumbnailer, .desktop handler, KIO service menu, the `launch-bundle` script |
-| `assets/registry/` | rootfs `/` | The registry daemon, OpenRC service, client library at `/usr/lib/muluos/`, `muluos-reg` and `muluos-bundle` CLIs |
+| `assets/registry/` | rootfs `/` | The registry daemon, systemd unit + OpenRC init script, client library at `/usr/lib/muluos/`, `muluos-reg` and `muluos-bundle` CLIs |
 
 ## Build flow
 
 1. `build.py` picks a profile (cli/kde) and arch.
 2. `muluos.builder.rootfs.build()`:
-   1. Calls `apk` with the union of `profiles.base.PACKAGES` and the
-      profile's `PACKAGES`. The rootfs ends up under `build/.../rootfs/`.
-   2. Writes `/etc/apk/repositories`.
-   3. Copies `muluos/installer/` to `<rootfs>/opt/installer`.
-   4. Calls `registry.install(rootfs)` — copies `assets/registry/`.
-   5. Calls `bundle.install(rootfs)` — copies `assets/bundle/`.
-   6. Drops [scripts/chroot-hook.sh](../scripts/chroot-hook.sh) into the
-      rootfs and chroots in to run it.
-3. The chroot hook enables OpenRC services (`networkmanager`,
-   `sshd`, `muluos-registryd`, and on KDE `sddm`/`dbus`), drops a
+    1. Runs `debootstrap --variant=minbase` to lay down a minimal Debian
+       skeleton, then `chroot apt-get install` to pull in the union of
+       `profiles.base.PACKAGES` and the profile's `PACKAGES`. The rootfs
+       ends up under `build/.../rootfs/`.
+    2. Writes `/etc/apt/sources.list`.
+    3. Copies `muluos/installer/` to `<rootfs>/opt/installer`.
+    4. Calls `registry.install(rootfs)` — copies `assets/registry/`.
+    5. Calls `bundle.install(rootfs)` — copies `assets/bundle/`.
+    6. Drops [scripts/chroot-hook-debian.sh](../scripts/chroot-hook-debian.sh)
+       into the rootfs and chroots in to run it.
+3. The chroot hook enables systemd services (`NetworkManager`,
+   `ssh`, `muluos-registryd`, and on KDE `sddm`/`dbus`), drops a
    `muluos.pth` into Python's site-packages so `import muluos_registry`
    works, sets up the live-mode installer auto-launch, and refreshes
    the MIME / desktop databases on KDE profiles.
@@ -98,7 +102,7 @@ Once installed, the running system has:
             ▼
 ┌────────────────────────────┐         ┌──────────────────────────────┐
 │ launch-bundle (script)     │ socket  │ muluos-registryd             │
-│                            │────────▶│ (root, OpenRC)               │
+│                            │────────▶│ (root, systemd)              │
 │  - reads Info.json         │  bind   │  - SQLite at /var/lib/muluos │
 │  - dup2(sock, fd 3)        │         │  - bundles + entries tables  │
 │  - exec child binary       │         │  - per-conn Session state    │
@@ -128,8 +132,9 @@ template, etc.), the pattern is:
 2. Add `muluos/builder/<name>.py` that has an `install(rootfs_dir)`
    function — see `registry.py` / `bundle.py` for the shape.
 3. Call it from `muluos/builder/rootfs.py` after the existing overlays.
-4. If the overlay introduces a service or needs database refreshes,
-   add the line to [scripts/chroot-hook.sh](../scripts/chroot-hook.sh).
+4. If the overlay introduces a systemd service, add it to
+   `assets/<name>/etc/systemd/system/` and the `systemctl enable` line
+   to [scripts/chroot-hook-debian.sh](../scripts/chroot-hook-debian.sh).
 
 Keep the overlay's contents **idempotent**: `shutil.copytree(...,
 dirs_exist_ok=True)` will overwrite, but the chroot hook can run more
