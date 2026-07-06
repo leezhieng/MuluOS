@@ -28,11 +28,20 @@ if [ -f /etc/systemd/system/muluos-env-generate.service ]; then
     systemctl enable muluos-env-generate
 fi
 
-# On KDE, enable menu sync and SDDM (but NOT here — SDDM/dbus are enabled
-# by the installer post-install, not on the live ISO, so the PyQt6 installer
-# can launch via startx instead of a display manager).
-if [ "$PROFILE" = "kde" ] && [ -f /etc/systemd/system/muluos-menu-sync.service ]; then
-    systemctl enable muluos-menu-sync
+# On KDE, enable menu sync.  SDDM and dbus are explicitly *disabled* here
+# because the live ISO launches the PyQt6 installer via startx instead of a
+# display manager.  The installer post-install step enables them on the
+# target system (see muluos.installer.backend.install._enable_profile_services).
+if [ "$PROFILE" = "kde" ]; then
+    if [ -f /etc/systemd/system/muluos-menu-sync.service ]; then
+        systemctl enable muluos-menu-sync
+    fi
+    # SDDM is auto-enabled by the Debian package postinst — disable it so it
+    # doesn't steal the display from the startx-based installer on the live ISO.
+    systemctl disable sddm 2>/dev/null || true
+    # dbus is socket-activated on systemd, but its explicit service may also be
+    # enabled by the package.  Disable it so it doesn't interfere with startx.
+    systemctl disable dbus 2>/dev/null || true
 fi
 
 # Profile marker so the installer knows which services to enable on the target.
@@ -63,12 +72,12 @@ chmod 0440 /etc/sudoers.d/muluos-live-nopasswd
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat > /etc/systemd/system/getty@tty1.service.d/muluos-autologin.conf <<'UNIT'
 [Service]
+# Only auto-login root when booted in live mode.
+ExecCondition=/usr/local/sbin/muluos-live-check
 ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
 UNIT
 
-# Conditionally restrict the auto-login override to live-mode only by
-# wrapping it in an ExecCondition that checks /proc/cmdline.
 cat > /usr/local/sbin/muluos-live-check <<'CHECK'
 #!/bin/sh
 grep -q "muluos.mode=live" /proc/cmdline 2>/dev/null
