@@ -1,0 +1,63 @@
+{
+  "$schema": "https://muluos.org/schemas/palette.json",
+  "name": "MuluOS Brand Palette",
+  "source": "logo.svg",
+  "description": "Core brand colors extracted from the MuluOS logo. All values in hex (#RRGGBB) with sRGB RGB equivalents.",
+  "colors": {
+    "primary": {
+      "hex": "#00446a",
+      "rgb": [0, 68, 106],
+      "role": "Primary brand color — deep navy blue. Use for headers, primary buttons, and key UI elements."
+    },
+    "primary-light": {
+      "hex": "#006699",
+      "rgb": [0, 102, 153],
+      "role": "Lighter variant of primary for hover states and secondary surfaces."
+    },
+    "primary-dark": {
+      "hex": "#002244",
+      "rgb": [0, 34, 68],
+      "role": "Darker variant of primary for pressed states and deep backgrounds."
+    },
+    "secondary": {
+      "hex": "#07acea",
+      "rgb": [7, 172, 234],
+      "role": "Secondary brand color — bright cyan. Use for highlights, links, and interactive elements."
+    },
+    "accent": {
+      "hex": "#24e9a9",
+      "rgb": [36, 233, 169],
+      "role": "Accent brand color — vibrant mint green. Use for success states, toggles, and CTAs."
+    },
+    "accent-warm": {
+      "hex": "#ff8c42",
+      "rgb": [255, 140, 66],
+      "role": "Warm accent — orange. Use for warnings, destructive actions, and contrasting highlights."
+    },
+    "neutral-100": {
+      "hex": "#ffffff",
+      "rgb": [255, 255, 255],
+      "role": "White. Page backgrounds, card surfaces in light theme."
+    },
+    "neutral-200": {
+      "hex": "#f0f4f8",
+      "rgb": [240, 244, 248],
+      "role": "Cool off-white. Alternating row backgrounds, subtle surfaces."
+    },
+    "neutral-300": {
+      "hex": "#d9e2ec",
+      "rgb": [217, 226, 236],
+      "role": "Light gray. Borders, disabled states, dividers."
+    },
+    "neutral-700": {
+      "hex": "#334e68",
+      "rgb": [51, 78, 104],
+      "role": "Dark slate. Secondary text, muted icons."
+    },
+    "neutral-900": {
+      "hex": "#0f172a",
+      "rgb": [15, 23, 42],
+      "role": "Near-black. Primary text, dark theme backgrounds."
+    }
+  }
+}

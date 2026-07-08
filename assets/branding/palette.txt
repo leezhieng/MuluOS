@@ -1,0 +1,27 @@
+# ============================================================
+# MuluOS Brand Color Palette
+# ============================================================
+# Source: logo.svg
+# Format: NAME          HEX        RGB              ROLE
+# ============================================================
+
+# --- Primary (deep navy blue) ---
+primary           #00446a    rgb(  0, 68,106)    Headers, primary buttons, key UI
+primary-light     #006699    rgb(  0,102,153)    Hover states, secondary surfaces
+primary-dark      #002244    rgb(  0, 34, 68)    Pressed states, deep backgrounds
+
+# --- Secondary (bright cyan) ---
+secondary         #07acea    rgb(  7,172,234)    Highlights, links, interactive elements
+
+# --- Accent (vibrant mint green) ---
+accent            #24e9a9    rgb( 36,233,169)    Success, toggles, CTAs
+
+# --- Accent Warm (orange) ---
+accent-warm       #ff8c42    rgb(255,140, 66)    Warnings, destructive actions, contrast
+
+# --- Neutrals ---
+neutral-100       #ffffff    rgb(255,255,255)    White — page backgrounds, cards (light)
+neutral-200       #f0f4f8    rgb(240,244,248)    Off-white — alternating rows
+neutral-300       #d9e2ec    rgb(217,226,236)    Light gray — borders, disabled
+neutral-700       #334e68    rgb( 51, 78,104)    Dark slate — secondary text, muted icons
+neutral-900       #0f172a    rgb( 15, 23, 42)    Near-black — primary text, dark theme bg

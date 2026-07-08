@@ -1,5 +1,7 @@
 # MuluOS
 
+<img src="assets/branding/icon-128.png" alt="MuluOS logo" width="128" height="128">
+
 MuluOS is an open-source Linux-based operating system built on top of Debian Linux. It uses Debian's stable, well-tested foundation as a base to assemble a fully customized system and architecture tailored to MuluOS's design goals.
 
 The project is currently in an experimental stage and is primarily focused on the desktop experience. Although a CLI version can also be installed for servers or IoT applications, package availability and stability are not yet guaranteed.
